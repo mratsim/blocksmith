@@ -193,9 +193,9 @@ proc getBlockByPreciseSlot(env: ptr tuple[env_result: Channel[BlockRef], env_db:
 
 ## Verification
 
-Techniques for CSP (Communicating Sequential Process) or PetriNets can be used to formally verify the behaviours of the HotDB as the communication is only done by message-pasing.
+Techniques for CSP (Communicating Sequential Process) or PetriNets can be used to formally verify the behaviours of the HotDB as the communication is only done by message-passing.
 
-For resilience, techniques derived from the Actomr Model (for example
+For resilience, techniques derived from the Actor Model (for example a supervisor that can kill/restart the HotDB service in case it gets in an inconsistent state).
 
 ## Optimization
 
