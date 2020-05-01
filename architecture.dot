@@ -64,7 +64,7 @@ digraph architecture{
   Validated -> HotDB [dir="both", label="pruneFinalized()\nSync"]
 
   Rewinder -> BeaconStatePool:bs1 [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
-  BeaconStatePool:bs1 -> HotDB [dir="both", label="setStateAtBlockSlot()"]
+  BeaconStatePool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
 
   Staging -> Rewinder [dir="both", label="isValidBlock()\nisValidAttestation()"]
   Validated -> Rewinder [dir="both", label="getHeadBlock()"]
