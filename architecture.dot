@@ -1,0 +1,74 @@
+digraph architecture{
+  node [shape = signature]; KeySigning [label="KeySigning (isolated process)"];
+  node [shape = octagon]; SyncManager SyncProtocol Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz Rewinder ForkChoice;
+  ETH2_API [label="ETH2.0-API (REST)"];
+  Slashing [label="Slashing Detection & Protection"];
+  ForkChoice [label="Fork Choice Engine\n(ProtoArray)"];
+  {rank = source; LibP2P ETH2_API CLI Time ValidatorUI;}
+
+  node [shape = record] BeaconNode;
+  BeaconNode [label="<nbc>Beacon Node | <PeerPool>PeerPool"]
+
+  ncli [label="ncli/nbench"];
+  {rank = same; ncli; nfuzz;}
+
+  node [shape = doubleoctagon]; Blocksmith Staging Validated;
+  node [shape = note] SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256
+  {rank = same; Blocksmith SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256;}
+
+  node [shape = record]; StagingDB;
+  StagingDB [label="StagingDB | {Unresolved Blocks | Unresolved Attestations}"];
+
+  node [shape = record]; BeaconStatePool;
+  node [shape = box]; BeaconState_X;
+
+  BeaconStatePool [label="<bs0>BeaconState 0|<bs1>BeaconState 1|<bs2>BeaconState 2|<bs3>BeaconState 3"];
+  {rank = same; BeaconStatePool BeaconState_X;}
+
+  node [shape = cylinder]; AttestationDB HotDB ColdDB;
+  {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB;}
+
+  {rank = same; SyncManager SyncProtocol;}
+
+  SyncManager -> BeaconNode:PeerPool [dir=both]
+  SyncProtocol -> BeaconNode:PeerPool [dir=both]
+
+  CLI -> BeaconNode
+  ValidatorUI -> BeaconNode
+  Time -> BeaconNode
+  BeaconNode -> Blocksmith [dir=both color="black:black"]
+  BeaconNode -> StagingDB
+  Blocksmith -> Staging [dir=both color="black:black"]
+  Blocksmith -> Validated [dir=both color="black:black"]
+  Staging -> StagingDB [dir=both label="resolve()"]
+
+  ncli -> BeaconState_X [label="state_transition"]
+  nfuzz -> BeaconState_X [label="state_transition"]
+
+  SyncProtocol -> LibP2P [label="Sync requests"]
+  LibP2P -> SyncManager [label="Sync replies"]
+
+  LibP2P -> BeaconNode:PeerPool [label="Recv unsafe blocks\nRecv unsafe attestations"]
+  BeaconNode:PeerPool -> LibP2P [label="Blocks proposed\nAggregate attestations"]
+  ETH2_API -> BeaconNode [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
+
+  Validated -> ForkChoice [dir="both", label="process_attestation()\nprocess_block()\nfind_head()\nmaybe_prune()"]
+
+  Staging -> Slashing [dir="both", label="isSlashable()"]
+  Validated -> KeySigning [dir="both", label="signBlock()"]
+  KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
+  Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
+  Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
+  Validated -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
+
+  Validated -> HotDB [dir="both", label="pruneFinalized()\nSync"]
+
+  Rewinder -> BeaconStatePool:bs1 [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
+  BeaconStatePool:bs1 -> HotDB [dir="both", label="setStateAtBlockSlot()"]
+
+  Staging -> Rewinder [dir="both", label="isValidBlock()\nisValidAttestation()"]
+  Validated -> Rewinder [dir="both", label="getHeadBlock()"]
+
+
+  Validated -> ColdDB [dir="both", label="pushFinalizedChain()\nSync"]
+}
