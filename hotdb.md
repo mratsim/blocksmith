@@ -54,7 +54,7 @@ They require from the HotDB a cached state and a sequence of blocks to apply to 
 
 ## Ownership & Serialization
 
-The HotDB is owned by the BlockSMith which initializes it and can kill it as well.
+The HotDB is owned by the Blocksmith which initializes it and can kill it as well.
 Initialization can be done from a serialized HotDB.
 
 Format to define.
@@ -103,7 +103,9 @@ Note: the result will actually be returned by channel
 #### New
 
 ```Nim
-proc getReplayStateTrail(db: HotDB, block_root: ValidBlockRoot, slot: Slot)
+proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ValidBlockRoot)
+
+proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ValidBlockRoot, slot: Slot)
 ```
 
 ### Depends
@@ -157,6 +159,8 @@ type
     blocks: Table[ValidBlockRoot, BlockRef]
     states: Table[ValidBlockRoot, ValidStateRoot]
     dag: ...
+    logFile: string
+    logLevel: LogLevel
 
 proc eventLoop(db: HotDB) {.gcsafe.} =
   while not shutdown:
@@ -169,33 +173,46 @@ proc eventLoop(db: HotDB) {.gcsafe.} =
 template call(hotDB: HotDB, fnCall: typed{nkCall}) =
   let hotDBTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object
   hotDB.inTasks.send(hotDBTask)
+```
 
+```
 # Example task
-proc getBlockByPreciseSlot(result: Channel[BlockRef], db: HotDB, slot: Slot) {.taskify.}=
+proc getBlockByPreciseSlot(resultChan: Channel[BlockRef], db: HotDB, slot: Slot) {.taskify.}=
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   let found = db.getBlockBySlot(slot)
   let r = if found.slot != slot: found else: nil
-  result.send(r)
+  resultChan.send(r)
+```
 
-# The {.taskify.} pragma is a simple transformation to
+The {.taskify.} pragma is a simple transformation to an implementation proc that process an `env` closure context.
 
-proc getBlockByPreciseSlot(env: ptr tuple[env_result: Channel[BlockRef], env_db: HotDB, env_slot: Slot]) =
-  template result: untyped {.dirty.} = env.env_result
+```Nim
+proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockRef], env_db: HotDB, env_slot: Slot]) =
+  template resultChan: untyped {.dirty.} = env.env_resultChan
   template db: untyped {.dirty.} = env.env_db
   template slot: untyped {.dirty.} = env.env_slot
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   let found = db.getBlockBySlot(slot)
   let r = if found.slot != slot: found else: nil
-  result.send(r)
+  resultChan.send(r)
+```
+
+Now we only need to define a public template that will handle the serialization and also ensure that the public routine signature is usable (and not an env pointer)
+
+```Nim*
+template getBlockByPreciseSlot*(hotDB: HotDB, resultChan: Channel[BlockRef], db: HotDB, slot: Slot): untyped =
+  ## Retrieves a block from the canonical chain with a slot
+  ## number equal to `slot`.
+  hotDB.call getBlockByPreciseSlot(resultChan, db, slot)
 ```
 
 ## Verification
 
 Techniques for CSP (Communicating Sequential Process) or PetriNets can be used to formally verify the behaviours of the HotDB as the communication is only done by message-passing.
 
-For resilience, techniques derived from the Actor Model (for example a supervisor that can kill/restart the HotDB service in case it gets in an inconsistent state).
+For resilience, techniques derived from the Actor Model (for example a supervisor that can kill/restart the HotDB service in case it gets in an inconsistent state) can be used.
 
 ## Optimization
 

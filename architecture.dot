@@ -1,10 +1,10 @@
 digraph architecture{
   node [shape = signature]; KeySigning [label="KeySigning (isolated process)"];
-  node [shape = octagon]; SyncManager SyncProtocol Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz Rewinder ForkChoice;
+  node [shape = octagon]; SyncManager SyncProtocol MainChain_Monitor Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz Rewinder ForkChoice;
   ETH2_API [label="ETH2.0-API (REST)"];
   Slashing [label="Slashing Detection & Protection"];
   ForkChoice [label="Fork Choice Engine\n(ProtoArray)"];
-  {rank = source; LibP2P ETH2_API CLI Time ValidatorUI;}
+  {rank = source; ETH1_DepositContract LibP2P ETH2_API CLI Time ValidatorUI;}
 
   node [shape = record] BeaconNode;
   BeaconNode [label="<nbc>Beacon Node | <PeerPool>PeerPool"]
@@ -28,7 +28,9 @@ digraph architecture{
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
   {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB;}
 
-  {rank = same; SyncManager SyncProtocol;}
+  {rank = same; MainChain_Monitor SyncManager SyncProtocol;}
+  ETH1_DepositContract -> MainChain_Monitor
+  MainChain_Monitor -> BeaconNode
 
   SyncManager -> BeaconNode:PeerPool [dir=both]
   SyncProtocol -> BeaconNode:PeerPool [dir=both]
@@ -66,8 +68,8 @@ digraph architecture{
   Rewinder -> BeaconStatePool:bs1 [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
   BeaconStatePool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
 
-  Staging -> Rewinder [dir="both", label="isValidBlock()\nisValidAttestation()"]
-  Validated -> Rewinder [dir="both", label="getHeadBlock()"]
+  Staging -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
+  Validated -> Rewinder [dir="both", label="produceBlock()"]
 
 
   Validated -> ColdDB [dir="both", label="pushFinalizedChain()\nSync"]

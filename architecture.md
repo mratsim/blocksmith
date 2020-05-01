@@ -32,3 +32,30 @@ The desired architecture of NBC (nim-beacon-chain) is the following:
   - If made threadsafe, for example via a channel to receive queries
     each "RewinderWorker" can independently interact with it.
   - Otherwise the "RewinderSupervisor" extract data from the HotDB (setStateAtBlockSlot) and is in charge of passing it to the target RewinderWorker
+
+## Implementation
+
+Modules are organized into services that communicate via message-passing.
+
+Services are either on a dedicated thread or a dedicated process if process isolation is desired (Key Signing service)
+
+Services are implemented via an eventLoop that wait until the channel for incoming task has a task.
+
+This architecture has the following advantages:
+- Services state is easier to handle:
+  - It is isolated if any state is actually required
+- Reduce coupling between modules
+- Services handle a small subset of functionality making them easier to test, audit, optimize and document
+- The nim-beacon-chain becomes multi-threaded at the service level
+- Properties of "Communicating Sequential Process" (CSP) can be formally verified.
+
+Unintended advantages:
+- Parameter passing is done on the heap, preventing stack overflows, especially with the limit Android stack size.
+- Namespacing
+
+The architecture has the following disadvantages:
+- lots of copyMem (but with our object sizes, returning an Eth2Digest involves an implicit copyMem so the difference might not be that critical)
+
+### Implementation notes
+
+The implementation support document on each service assumes almost no available abstraction to handle cross-thread communications and function calls. A CSP, actor, micro-service abstraction or alternatively built-in support of thread-safe closures in Nim would significantly improve the ergonomy of the implementation.
