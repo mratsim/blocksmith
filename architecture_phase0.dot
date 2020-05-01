@@ -28,7 +28,7 @@ digraph architecture{
   node [shape = box]; BeaconState_X;
 
   RewinderWorkerPool [label="{RewinderWorkerPool | {<bs0>BeaconState 0|<bs1>BeaconState 1|<bs2>BeaconState 2|<bs3>BeaconState 3}}"];
-  {rank = same; BeaconStatePool BeaconState_X;}
+  {rank = same; RewinderWorkerPool BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
   {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB;}
