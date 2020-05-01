@@ -13,16 +13,21 @@ digraph architecture{
   {rank = same; ncli; nfuzz;}
 
   node [shape = doubleoctagon]; Blocksmith Staging Validated;
+  node [shape = invhouse]; Phase_1 Phase_2 Eth1_EE;
   node [shape = note] SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256
-  {rank = same; Blocksmith SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256;}
+  {rank = same; Blocksmith Phase_1 Phase_2 SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256;}
+
+  BeaconNode -> Phase_1
+  BeaconNode -> Phase_2
+  Phase_2 -> Eth1_EE
 
   node [shape = record]; StagingDB;
   StagingDB [label="StagingDB | {Unresolved Blocks | Unresolved Attestations}"];
 
-  node [shape = record]; BeaconStatePool;
+  node [shape = record]; RewinderWorkerPool;
   node [shape = box]; BeaconState_X;
 
-  BeaconStatePool [label="<bs0>BeaconState 0|<bs1>BeaconState 1|<bs2>BeaconState 2|<bs3>BeaconState 3"];
+  RewinderWorkerPool [label="{RewinderWorkerPool | {<bs0>BeaconState 0|<bs1>BeaconState 1|<bs2>BeaconState 2|<bs3>BeaconState 3}}"];
   {rank = same; BeaconStatePool BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
@@ -44,8 +49,8 @@ digraph architecture{
   Blocksmith -> Validated [dir=both color="black:black"]
   Staging -> StagingDB [dir=both label="resolve()"]
 
-  ncli -> BeaconState_X [label="state_transition"]
-  nfuzz -> BeaconState_X [label="state_transition"]
+  ncli -> BeaconState_X [label="state_transition()"]
+  nfuzz -> BeaconState_X [label="state_transition()"]
 
   SyncProtocol -> LibP2P [label="Sync requests"]
   LibP2P -> SyncManager [label="Sync replies"]
@@ -65,8 +70,8 @@ digraph architecture{
 
   Validated -> HotDB [dir="both", label="pruneFinalized()\nSync"]
 
-  Rewinder -> BeaconStatePool:bs1 [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
-  BeaconStatePool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
+  Rewinder -> RewinderWorkerPool [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
+  RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
 
   Staging -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
   Validated -> Rewinder [dir="both", label="produceBlock()"]
