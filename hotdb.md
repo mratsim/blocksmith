@@ -7,7 +7,7 @@ since the last finalized block.
 
 It only operates on validated blocks.
 The HotDB interacts with 2 services:
-- the "Validated" service
+- the "Clearance" service
   - which provides new blocks to cache
   - which requests for pruning on a new finalized epoch
 - the "Rewinder" service
@@ -27,7 +27,7 @@ The HotDB shall cache intermediate BeaconState to address the following needs
 
 ## Providers
 
-The "Validated" service is the only source of data for cached blocks:
+The "Clearance" service is the only source of data for cached blocks:
 - add new blocks to the cache, in particular after sync.
 - notify a new finalized block, which reset the HotDB to a pristine state.
 
@@ -37,7 +37,7 @@ The "RewinderWorkers" are the only source of data for cached states:
 
 ## Consumers
 
-### "Validated" service
+### "Clearance" service
 
 The validated service answers incoming BlockSync requests by querying the HotDB for a chain of blocks.
 
@@ -79,26 +79,26 @@ a separate thread sleeping on an incoming task channel that will activate on an 
 
 ```Nim
 type
-  ValidBlockRoot = distinct Eth2Digest
-  ValidStateRoot = distinct Eth2Digest
+  ClearedBlockRoot = distinct Eth2Digest
+  ClearedStateRoot = distinct Eth2Digest
 
   BlockDAGNode = object
     ## A node in the Direct Acyclic Graph of candidate chains.
 ```
 
-### "Validated" service
+### "Clearance" service
 
 #### Existing
 ```Nim
-proc getBlockRange(service: HotDB, startSlot: Slot, skipStep: Natural, output: var openArray[BlockRef]): Natural
+proc getBlockRange(service: HotDB, startSlot: Slot, skipStep: Natural, output: var openArray[BlockDAGNode]): Natural
   ## For sync_protocol.nim
-proc getBlockByPreciseSlot(service: HotDB, slot: Slot): BlockRef
+proc getBlockByPreciseSlot(service: HotDB, slot: Slot): BlockDAGNode
   ## For `installBeaconApiHandlers` in beacon_node.nim
 ```
 
 #### New
 ```Nim
-proc pruneFinalized(service: HotDB, block_root: ValidBlockRoot)
+proc pruneFinalized(service: HotDB, block_root: ClearedBlockRoot)
 ```
 
 ### "RewinderWorker"
@@ -108,9 +108,9 @@ Note: the result will actually be returned by channel
 #### New
 
 ```Nim
-proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ValidBlockRoot)
+proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ClearedBlockRoot)
 
-proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ValidBlockRoot, slot: Slot)
+proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ClearedBlockRoot, slot: Slot)
 ```
 
 ### Depends
@@ -120,8 +120,8 @@ Depends on a way to add new cached states, as mentioned in the transition period
 ### "BlockSmith"
 
 The block smith owns the HotDB? It is responsible to ensure that
-- the HotDB is started before the services that depends on it (Validated and Rewinder services)
-- the Validated and Rewinder services are stopped before shutting the HotDB down.
+- the HotDB is started before the services that depends on it (Clearance and Rewinder services)
+- the Clearance and Rewinder services are stopped before shutting the HotDB down.
 
 #### New
 
@@ -144,13 +144,13 @@ const ResultChannelSize = sizeof(ptr RawChannel)
 
 const EnvSize = max(
   # getBlockRange
-  ResultChannelSize + sizeof(Slot) + sizeof(Natural) + sizeof(seq[BlockRef]),
+  ResultChannelSize + sizeof(Slot) + sizeof(Natural) + sizeof(seq[BlockDAGNode]),
   # getBlockByPreciseSlot
   ResultChannelSize + sizeof(Slot),
   # pruneFinalized
-  ResultChannelSize + sizeof(ValidBlockRoot),
+  ResultChannelSize + sizeof(ClearedBlockRoot),
   # getReplayStateTrail
-  ResultChannelSize + sizeof(ValidBlockRoot) + sizeof(Slot)
+  ResultChannelSize + sizeof(ClearedBlockRoot) + sizeof(Slot)
 )
 
 type
@@ -161,8 +161,8 @@ type
   HotDB = ptr object
     inTasks: Channel[HotDBTask]
     shutdown: bool
-    blocks: Table[ValidBlockRoot, BlockRef]
-    states: Table[ValidBlockRoot, ValidStateRoot]
+    blocks: Table[ClearedBlockRoot, BlockDAGNode]
+    states: Table[ClearedBlockRoot, ClearedStateRoot]
     dag: ...
     logFile: string
     logLevel: LogLevel
@@ -182,7 +182,7 @@ template call(service: HotDB, fnCall: typed{nkCall}) =
 
 ```
 # Example task
-proc getBlockByPreciseSlot(resultChan: Channel[BlockRef], db: HotDB, slot: Slot) {.taskify.}=
+proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) {.taskify.}=
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   let found = db.getBlockBySlot(slot)
@@ -193,7 +193,7 @@ proc getBlockByPreciseSlot(resultChan: Channel[BlockRef], db: HotDB, slot: Slot)
 The {.taskify.} pragma is a simple transformation to an implementation proc that process an `env` closure context.
 
 ```Nim
-proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockRef], env_db: HotDB, env_slot: Slot]) =
+proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockDAGNode], env_db: HotDB, env_slot: Slot]) =
   template resultChan: untyped {.dirty.} = env.env_resultChan
   template db: untyped {.dirty.} = env.env_db
   template slot: untyped {.dirty.} = env.env_slot
@@ -207,7 +207,7 @@ proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockRef], env
 Now we only need to define a public template that will handle the serialization and also ensure that the public routine signature is usable (and not an env pointer)
 
 ```Nim*
-template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockRef], hotDB: HotDB, slot: Slot): untyped =
+template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], hotDB: HotDB, slot: Slot): untyped =
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   service.call getBlockByPreciseSlot(resultChan, hotDB, slot)

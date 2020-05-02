@@ -5,16 +5,16 @@
 The rewinder service answers requests that require state data.
 
 It interacts with 2 services:
-- the "Validated" service
+- the "Clearance" service
   - to provide the head block of the canonical chain.
-- the "Staging" service
+- the "Quarantine" service
   - to validate a block
   - to validate an attestation
 
 It is the only module that apply `state_transition()`. Furthermore the only other module that deal with `BeaconState` is the HotDB but only with raw copyMem. This is an important properties with the following benefits:
 - BeaconState is costly both in term of memory and CPU. We can focus the target of our optimizations.
 - Mutable state has a higher chance to have bugs. We can focus the target of our instrumentation and verification effort.
-- When stateless clients become a reality, we can strip this module, the `Staging` service and the state caching part from the HotDB.
+- When stateless clients become a reality, we can strip this module, the `Quarantine` service and the state caching part from the HotDB.
 
 To verify a block or an attestation, the application must load the state prior to the targeted block and then try to apply the block.
 This requires keeping a cache of states and blocks to apply to reach the target state, this is retrieved from the HotDB.
@@ -51,7 +51,7 @@ The number of worker threads will depend on the available cores and memory const
 ```Nim
 type
   ValidBlock = distinct SignedBeaconBlock
-  StagingBlock = distinct SignedBeaconBlock
+  QuarantinedBlock = distinct SignedBeaconBlock
   JustifiedSlot = Slot
 
   UpdateFlag* = enum
@@ -135,7 +135,7 @@ template call(service: Rewinder, fnCall: typed{nkCall}) =
 proc isValidBeaconBlockP2PExWorker(
        resultChan: ptr Channel[bool]],
        wrk: RewinderWorker,
-       unsafeBlock: StagingBlock
+       unsafeBlock: QuarantinedBlock
      ) {.taskify.} =
   ## Expensive block validation.
   ## The unsafeBlock parent MUST be in the HotDB before calling this proc
@@ -178,7 +178,7 @@ proc isValidBeaconBlockP2PExWorker(
        env: tuple[
          env_resultChan: ptr Channel[bool],
          env_wrk: RewinderWorker,
-         env_unsafeBlock: StagingBlock
+         env_unsafeBlock: QuarantinedBlock
      ]) =
   ## Expensive block validation.
   ## The unsafeBlock parent MUST be in the HotDB before calling this proc
@@ -225,7 +225,7 @@ type isValidBeaconBlockP2PExTask = ptr object
   env: tuple[
     resultChan: ptr Channel[bool],
     wrk: RewinderWorker,
-    unsafeBlock: StagingBlock
+    unsafeBlock: QuarantinedBlock
   ]
 
 proc dispatchisValidBeaconBlockP2PExToWorker(task: ptr RewinderTask, worker: RewinderWorker) =
@@ -260,7 +260,7 @@ template isValidBeaconBlockP2PEx(
            service: Rewinder
            resultChan: ptr Channel[bool],
            wrk: Rewinder,
-           unsafeBlock: StagingBlock
+           unsafeBlock: QuarantinedBlock
          ) =
   rewinder.call isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock)
 ```
@@ -283,7 +283,7 @@ TODO
 proc isValidBeaconBlockEx(
        resultChan: ptr Channel[Option[JustifiedSlot]],
        wrk: RewinderWorker,
-       unsafeBlock: StagingBlock
+       unsafeBlock: QuarantinedBlock
      )
 ```
 

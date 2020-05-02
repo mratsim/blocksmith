@@ -12,7 +12,7 @@ digraph architecture{
   ncli [label="ncli/nbench"];
   {rank = same; ncli; nfuzz;}
 
-  node [shape = doubleoctagon]; Blocksmith Staging Validated;
+  node [shape = doubleoctagon]; Blocksmith Quarantine Clearance;
   node [shape = invhouse]; Phase_1 Phase_2 Eth1_EE;
   node [shape = note] SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256
   {rank = same; Blocksmith Phase_1 Phase_2 SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256;}
@@ -21,8 +21,8 @@ digraph architecture{
   BeaconNode -> Phase_2
   Phase_2 -> Eth1_EE
 
-  node [shape = record]; StagingDB;
-  StagingDB [label="StagingDB | {Unresolved Blocks | Unresolved Attestations}"];
+  node [shape = record]; QuarantinedDB;
+  QuarantinedDB [label="QuarantinedDB | {Unresolved Blocks | Unresolved Attestations}"];
 
   node [shape = record]; RewinderWorkerPool;
   node [shape = box]; BeaconState_X;
@@ -46,10 +46,10 @@ digraph architecture{
   ValidatorUI -> BeaconNode
   Time -> BeaconNode
   BeaconNode -> Blocksmith [dir=both color="black:black"]
-  BeaconNode -> StagingDB
-  Blocksmith -> Staging [dir=both color="black:black"]
-  Blocksmith -> Validated [dir=both color="black:black"]
-  Staging -> StagingDB [dir=both label="resolve()"]
+  BeaconNode -> QuarantinedDB
+  Blocksmith -> Quarantine [dir=both color="black:black"]
+  Blocksmith -> Clearance [dir=both color="black:black"]
+  Quarantine -> QuarantinedDB [dir=both label="resolve()"]
 
   ncli -> BeaconState_X [label="state_transition()"]
   nfuzz -> BeaconState_X [label="state_transition()"]
@@ -61,23 +61,23 @@ digraph architecture{
   BeaconNode:PeerPool -> LibP2P [label="Blocks proposed\nAggregate attestations"]
   ETH2_API -> BeaconNode [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
 
-  Validated -> ForkChoice [dir="both", label="process_attestation()\nprocess_block()\nfind_head()\nmaybe_prune()"]
+  Clearance -> ForkChoice [dir="both", label="process_attestation()\nprocess_block()\nfind_head()\nmaybe_prune()"]
 
-  Staging -> Slashing [dir="both", label="isSlashable()"]
-  Validated -> KeySigning [dir="both", label="signBlock()"]
+  Quarantine -> Slashing [dir="both", label="isSlashable()"]
+  Clearance -> KeySigning [dir="both", label="signBlock()"]
   KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
   Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
   Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
-  Validated -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
+  Clearance -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
 
-  Validated -> HotDB [dir="both", label="pruneFinalized()\nSync"]
+  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync"]
 
   Rewinder -> RewinderWorkerPool [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
   RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
 
-  Staging -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
-  Validated -> Rewinder [dir="both", label="produceBlock()"]
+  Quarantine -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
+  Clearance -> Rewinder [dir="both", label="produceBlock()"]
 
 
-  Validated -> ColdDB [dir="both", label="pushFinalizedChain()\nSync"]
+  Clearance -> ColdDB [dir="both", label="pushFinalizedChain()\nSync"]
 }

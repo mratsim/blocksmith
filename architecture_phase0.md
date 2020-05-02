@@ -11,8 +11,8 @@ The desired architecture of NBC (nim-beacon-chain) is the following:
   - attestation_aggregation.nim
   The replacements are:
   - "Blocksmith"
-  - "Staging"
-  - "Validated"
+  - "Quarantine"
+  - "Clearance"
   The idea is to highlight the implicit "firewall" between non-validated blocks and attestations
   and cleanly separate modules (and types) that deal with tainted network data,
   and modules that operate on clean data.
@@ -24,7 +24,7 @@ The desired architecture of NBC (nim-beacon-chain) is the following:
   - It has been multithreaded, with a the Rewinder service managing a pool of temporary beacon state "RewinderWorker".
     and distributing the attestation validation, block validation and head block requests
     asynchronously on a ready "RewinderWorker".
-- The block pool tables and caches duties are moved to a HotDB and StagingDB
+- The block pool tables and caches duties are moved to a HotDB and QuarantinedDB
   - This makes the core part of the firewall stateless
   - Storage is separate from logic and both are easier to optimize independently.
 - The HotDB will only hold the blockchains DAG since the last finalized block.
@@ -43,7 +43,12 @@ Services are implemented via an eventLoop that wait until the channel for incomi
 
 This architecture has the following advantages:
 - Services state is easier to handle:
-  - It is isolated if any state is actually required
+  - Each service state is isolated if any state is actually required
+  - Long-term state is stored in clearly identified "DB":
+    - ColdDB for the finalized chain
+    - HotDB for the Direct Acyclic Graph of candidate chains
+    - AttestationDB and SignedBlockDB for slashing detection and protection
+    The internal state of non-DB service is only transient and **space usage is bounded**.
 - Reduce coupling between modules
 - Services handle a small subset of functionality making them easier to test, audit, optimize and document
 - The nim-beacon-chain becomes multi-threaded at the service level
@@ -51,7 +56,7 @@ This architecture has the following advantages:
 
 Unintended advantages:
 - Parameter passing is done on the heap, preventing stack overflows, especially with the limit Android stack size.
-- Namespacing
+- Namespacing, as cross-service function calls use the target service as first-parameter.
 
 The architecture has the following disadvantages:
 - lots of copyMem (but with our object sizes, returning an Eth2Digest involves an implicit copyMem so the difference might not be that critical)

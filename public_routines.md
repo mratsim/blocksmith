@@ -9,12 +9,12 @@ We define some the following prerequisites types
 ```Nim
 type
   ValidBlock = distinct SignedBeaconBlock
-  StagingBlock = distinct SignedBeaconBlock
+  QuarantinedBlock = distinct SignedBeaconBlock
 
-  ValidBlockRoot = distinct Eth2Digest
+  ClearedBlockRoot = distinct Eth2Digest
   StagingBlockRoot = distinct Eth2Digest
 
-  ValidStateRoot = distinct Eth2Digest
+  ClearedStateRoot = distinct Eth2Digest
   StagingStateRoot = distinct Eth2Digest
 
   BlockDAGNode = object
@@ -24,7 +24,7 @@ type
 The goal is to avoid mixing block_root and state_root at the type level
 and also to prevent using non-validated data in the wrong place.
 
-Additionally a grep for `ValidBlock`, `ValidBlockRoot` and `ValidStateRoot` conversions
+Additionally a grep for `ValidBlock`, `ClearedBlockRoot` and `ClearedStateRoot` conversions
 will highlight the boundaries. Relevant boundary procedures should receive special fuzzing, testing and auditing focus.
 
 ## Block_pool
@@ -97,7 +97,7 @@ This is problematic for several reasons:
   a dispatcher to distribute BeaconState manipulation requests on multiple threads.
 - Block signing and attestation production MUST be handled in a separate process.
 - There is strong coupling between networking services and consensus services.
-- We want an explicit "firewall" with tainted UnsafeBlock and distinct ValidatedBlock to enforce proper usage.
+- We want an explicit "firewall" with tainted UnsafeBlock and distinct ClearedBlock to enforce proper usage.
 
 This means that
 - `proposeBlock` in `beacon_node.nim` is split into
@@ -113,7 +113,7 @@ This means that
   - `getAggregateAndProofFor(BeaconBlock, Slot)` in the Rewinder service
   - `signAggregateAndProof` in the KeySigning isolated service
 - `getBeaconState(slot: Option[Slot], root: Option[Eth2Digest]) -> StringOfJson` queries:
-  - `getJsonEncodedStateFor(state_root: ValidStateRoot, slot: Slot)`
+  - `getJsonEncodedStateFor(state_root: ClearedStateRoot, slot: Slot)`
 - `addLocalValidators` only uses BeaconState to warn if a validator is unknown in the state registry.
   This can happen if the validator deposit is not processed yet.
   That part can be delegated to a
@@ -136,10 +136,13 @@ They are exported just for testing except for:
 - `getAncestorAt` in `handleValidatorDuties`
 - `findAncestorBySlot` in `handleAttestations`
 
-### Updates
+### Adding a QuarantinedBlock to the DAG
 
 ```Nim
 proc add*(pool: var BlockPool, blockRoot: Eth2Digest, signedBlock: SignedBeaconBlock)
+proc addResolvedBlock(
+    pool: var BlockPool, state: BeaconState, blockRoot: Eth2Digest,
+    signedBlock: SignedBeaconBlock, parent: BlockRef): BlockRef
 ```
 
 Is one of the proc that allows a block to traverse the firewall
@@ -147,7 +150,7 @@ Is one of the proc that allows a block to traverse the firewall
 It should be handled at `Blocksmith` level with
 
 ```Nim
-proc incomingBlock*(service: Blocksmith, resultChan: Channel[Result[BlockDAGNode, IncomingBlockStatus]], block_root: StagingBlockRoot, stagingBlock: StagingBlock) =
+proc incomingBlock*(service: Blocksmith, resultChan: Channel[Result[BlockDAGNode, IncomingBlockStatus]], block_root: StagingBlockRoot, stagingBlock: QuarantinedBlock) =
 
   assert Eth2Digest(block_root) = hash_tree_root(stagingBlock)
 
@@ -175,7 +178,7 @@ proc incomingBlock*(service: Blocksmith, resultChan: Channel[Result[BlockDAGNode
   if parent.isSome():
     # If the parent is in the HotDB we can validate the block
 
-    # First of all we can remove it from the StagingDB
+    # First of all we can remove it from the QuarantinedDB
     service.staging.delete(block_root)
 
     # Now we fully validate it, this is delegated to the multithreaded Rewinder service
@@ -194,4 +197,11 @@ proc incomingBlock*(service: Blocksmith, resultChan: Channel[Result[BlockDAGNode
 
 
     # TODO ...
+  else:
+    service.stagingDB.unknownParent(stagingBlock.message.parent_root)
 ```
+
+Blocks with unknown parents are sent to the QuarantinedDB.
+After a new block becomes `validated`.
+The `Quarantine` service can schedule a (possibly non-blocking) `resolve()`
+operation to collect new blocks to validate.
