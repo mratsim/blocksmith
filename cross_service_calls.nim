@@ -26,7 +26,107 @@ type
     fn*: proc(env: pointer) {.nimcall.}
     env*: array[N, byte]
 
-macro crossServiceCall*(funcCall: typed{nkCall}, MaxEnvSize: static int): untyped =
+proc servicifyImpl(wrapperName, impl, procArgs, procArgTypes: NimNode): NimNode =
+  ## This create a wrapper that can deserialize a Task
+  ## and call the actual implementation.
+  wrapperName.expectKind nnkIdent
+  impl.expectKind nnkSym
+  procArgs.expectKind nnkPar
+  procArgTypes.expectKind nnkPar
+  procArgs.expectLen(procArgTypes.len)
+
+  # Create the taskified function
+  var serviceCall = newCall(impl)
+  var callEnv = ident("env") # typed pointer to the environment
+
+  # Create the function call
+  # - `serviceCall()`
+  # - `serviceCall(a[])`
+  # - `serviceCall(a[0], a[1], a[2], ...)
+
+  if procArgs.len == 1:
+    # With only 1 arg, the tuple syntax doesn't construct a tuple
+    # let env = (123) # is an int
+    serviceCall.add nnkDerefExpr.newTree(callEnv)
+  else: # This handles the 0 arg case as well
+    for i in 0 ..< procArgs.len:
+      serviceCall.add nnkBracketExpr.newTree(
+        callEnv,
+        newLit i
+      )
+
+  let withArgs = procArgs.len > 0
+
+  # Create the cross-service call wrapper
+  result = quote do:
+    proc `wrapperName`(env: pointer) {.nimcall, gcsafe.} =
+      when bool(`withArgs`):
+        let `callEnv` = cast[ptr `procArgTypes`](env)
+      `serviceCall`
+
+proc getDefinitionArgs(procSym: NimNode): tuple[args, argsTy: NimNode] =
+  ## Get the arguments from a proc definition
+  # For now, we don't automatically create Future/Flowvar/Channels
+  # so ensure that there is no return type
+  procSym.expectKind nnkSym
+  let procParams = procSym.getImpl[3]
+  procParams[0].expectKind(nnkEmpty) # No return type
+
+  # Get a serialized type and data for all function arguments
+  result.argsTy = nnkPar.newTree()
+  result.args = nnkPar.newTree()
+  for i in 1 ..< procParams.len:
+    result.args.add procParams[i][0]
+    result.argsTy.add procParams[i][1]
+    procParams[i][2].expectKind nnkEmpty # Default parameters are not supported
+
+proc getCallArgs(procCall: NimNode): tuple[args, argsTy: NimNode] =
+  ## Get the argument from a procedure call
+  # For now, we don't automatically create Future/Flowvar/Channels
+  # so ensure that there is no return type
+  procCall.expectKind nnkCall
+  procCall[0].getImpl[3][0].expectKind(nnkEmpty) # No return type
+
+  # Get a serialized type and data for all function arguments
+  result.argsTy = nnkPar.newTree()
+  result.args = nnkPar.newTree()
+  for i in 1 ..< procCall.len:
+    result.args.add procCall[i]
+    result.argsTy.add getTypeInst(procCall[i])
+
+proc sizeCheck*(procSym, argsTy: NimNode, MaxEnvSize: int): NimNode =
+  # Check that the type is safely serializable
+  result = newStmtList()
+  let fnName = $procSym
+  let withArgs = argsTy.len > 0
+
+  if withArgs:
+    result.add quote do:
+      static:
+        doAssert sizeof(`argsTy`) <= `MaxEnvSize`, "\n\n" & `fnName` &
+          " has arguments that do not fit in the task data buffer.\n" &
+          "  Argument types: " & $`argsTy` & "\n" &
+          "  Current size: " & $sizeof(`argsTy`) & "\n" &
+          "  Maximum size allowed: " & $`MaxEnvSize` & "\n\n"
+
+macro servicify*(wrapperName: untyped, impl: typed, MaxEnvSize: static int): untyped =
+  ## Create a wrapper for an `impl` function suitable for
+  ## cross-service call.
+  ## Important:
+  ## - The new function as the following signature
+  ##   proc name(env: pointer) {.nimcall, gcsafe.}
+  ## - The `impl` function should have no overload
+  ## - No size checks are done in this macro
+  let (args, argsTy) = getDefinitionArgs(impl)
+  result = newStmtList()
+
+  result.add sizeCheck(impl, argsTy, MaxEnvSize)
+  result.add servicifyImpl(wrapperName, impl, args, argsTy)
+
+  echo "----------servicify------------"
+  echo result.toStrLit
+
+macro crossServiceCall*(serviceWrapper: typed{nkSym}, MaxEnvSize: static int, implCall: typed{nkCall}): untyped =
   ## Serialize a function call into a Task
   ## that can be executed across service
   ## And create a handler that can deserialize
@@ -39,9 +139,14 @@ macro crossServiceCall*(funcCall: typed{nkCall}, MaxEnvSize: static int): untype
   ##     proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
   ##       discard "Implementation"
   ##
+  ##     servicify(svc_getBlockByPreciseSlot, getBlockByPreciseSlot)
+  ##
   ##     template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
   ##       bind HotDBEnvSize
-  ##       let task = crossServiceCall getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot), HotDBEnvSize
+  ##       let task = crossServiceCall(
+  ##         svc_getBlockByPreciseSlot, HotDBEnvSize
+  ##         getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot)
+  ##       )
   ##       service.inTasks.send task
   ##     ```
   ## It is recommended to prefix the template via the service name.
@@ -49,58 +154,8 @@ macro crossServiceCall*(funcCall: typed{nkCall}, MaxEnvSize: static int): untype
   ## This also acts as service namespacing.
   result = newStmtList()
 
-  # For now, we don't automatically create Future/Flowvar/Channels
-  # so ensure that there is no return type
-  funcCall[0].getImpl[3][0].expectKind(nnkEmpty)
-
-  # Get a serialized type and data for all function arguments
-  var argsTy = nnkPar.newTree()
-  var args = nnkPar.newTree()
-  for i in 1 ..< funcCall.len:
-    argsTy.add getTypeInst(funcCall[i])
-    args.add funcCall[i]
-
-  # Check that the type is safely serializable
-  let fn = funcCall[0]
-  let fnName = $fn
-  let withArgs = args.len > 0
-  if withArgs:
-    result.add quote do:
-      static:
-        doAssert sizeof(`argsTy`) <= `MaxEnvSize`, "\n\n" & `fnName` &
-          " has arguments that do not fit in the task data buffer.\n" &
-          "  Argument types: " & $`argsTy` & "\n" &
-          "  Current size: " & $sizeof(`argsTy`) & "\n" &
-          "  Maximum size allowed: " & $`MaxEnvSize` & "\n\n"
-
-  # Create the taskified function
-  let taskifiedFn = ident("taskified_" & fnName)
-  var serviceCall = newCall(fn)
-  var callEnv = ident("env") # typed pointer to the environment
-
-  # Create the function call
-  # - `serviceCall()`
-  # - `serviceCall(a[])`
-  # - `serviceCall(a[0], a[1], a[2], ...)
-
-  if funcCall.len == 2:
-    # With only 1 arg, the tuple syntax doesn't construct a tuple
-    # let env = (123) # is an int
-    serviceCall.add nnkDerefExpr.newTree(callEnv)
-  else: # This handles the 0 arg case as well
-    for i in 1 ..< funcCall.len:
-      serviceCall.add nnkBracketExpr.newTree(
-        callEnv,
-        newLit i-1
-      )
-
-  # Create the taskified call
-  result.add quote do:
-    proc `taskifiedFn`(param: pointer) {.nimcall, gcsafe.} =
-
-      when bool(`withArgs`):
-        let `callEnv` = cast[ptr `argsTy`](param)
-      `serviceCall`
+  let (args, argsTy) = getCallArgs(implCall)
+  result.add sizeCheck(implCall[0], argsTy, MaxEnvSize)
 
   # We serialize by copying through an ad-hoc tuple
   # We enforce sink argument as well
@@ -109,13 +164,14 @@ macro crossServiceCall*(funcCall: typed{nkCall}, MaxEnvSize: static int): untype
   let sunkCopy = bindSym("=sink")
   result.add quote do:
     var task: Task[`MaxEnvSize`]
-    task.fn = `taskifiedFn`
+    task.fn = `serviceWrapper`
     `sunkCopy`(cast[ptr `argsTy`](task.env.addr)[], `args`)
     task
 
   # Wrap in a block for namespacing
   result = nnkBlockStmt.newTree(newEmptyNode(), result)
 
+  echo "------cross-service call------"
   echo result.toStrLit()
 
 when isMainModule:
@@ -141,11 +197,13 @@ when isMainModule:
   proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
     discard "Implementation"
 
+  servicify(svc_getBlockByPreciseSlot, getBlockByPreciseSlot, HotDBEnvSize)
+
   template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
     bind HotDBEnvSize
     let task = crossServiceCall(
-      getBlockByPreciseSlot(resultChan, db, slot),
-      HotDBEnvSize
+      svc_getBlockByPreciseSlot, HotDBEnvSize,
+      getBlockByPreciseSlot(resultChan, db, slot)
     )
     service.inTasks.send task
 

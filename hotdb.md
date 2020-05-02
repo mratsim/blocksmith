@@ -188,16 +188,18 @@ proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: S
   resultChan.send(r)
 ```
 
-Now we only need to define a public template that will handle the serialization via the crossServiceCall macro
+Now we only need to create a service wrapper and define a public template that will handle the serialization via the crossServiceCall macro
 
 ```Nim*
+servicify(svc_getBlockByPreciseSlot, getBlockByPreciseSlot, HotDBEnvSize)
+
 template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   bind HotDBEnvSize
   let task = crossServiceCall(
+    svc_getBlockByPreciseSlot, HotDBEnvSize,
     getBlockByPreciseSlot(resultChan, db, slot),
-    HotDBEnvSize
   )
   service.inTasks.send task
 ```

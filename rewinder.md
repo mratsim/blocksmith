@@ -177,10 +177,6 @@ proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB) {.gcsafe.} =
     taskToRepackage.fn(supervisor, taskToRepackage)
 
   supervisor.teardown()
-
-template call(service: Rewinder, fnCall: typed{nkCall}) =
-  let rewinderTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object
-  service.inTasks.send(rewinderTask)
 ```
 
 ### isValidBeaconBlockP2PEx()
@@ -225,6 +221,9 @@ proc isValidBeaconBlockP2PExWorker(
     return
 
   resultChan.send true
+
+servicify(svc_isValidBeaconBlockP2PExWorker, isValidBeaconBlockP2PExWorker)
+
 ```
 
 At the supervisor level we have the following indirection to dispatch to an available worker
@@ -250,7 +249,16 @@ proc dispatchisValidBeaconBlockP2PExToWorker(task: ptr RewinderTask, worker: Rew
   task.env.wrk = cast[Rewinder](worker)
   worker.inTasks.send(task[])
 
-proc isValidBeaconBlockP2PEx(supervisor: Rewinder, task: ptr RewinderTask) =
+proc isValidBeaconBlockP2PEx(
+       resultChan: ptr Channel[bool]],
+       wrk: RewinderWorker,
+       unsafeBlock: QuarantinedBlock
+     ) =
+  # Dummy proc, the "Rewinder" service only dispatches to RewinderWorkers
+  # so we don't have an implementation here
+  doAssert false, "This is a dummy proc"
+
+proc svc_isValidBeaconBlockP2PEx(supervisor: Rewinder, task: ptr RewinderTask) =
   # This dispatches the isValidBeaconBlockP2PEx to a free rewinderWorker
 
   # 1. Check if there is a ready worker
@@ -272,7 +280,10 @@ template isValidBeaconBlockP2PEx(
            unsafeBlock: QuarantinedBlock
          ) =
   bind RewinderEnvSize
-  let task = crossServiceCall isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock), RewinderEnvSize
+  let task = crossServiceCall(
+    svc_isValidBeaconBlockP2PEx, RewinderEnvSize,
+    isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock)
+  )
   service.inTasks.send task
 ```
 
