@@ -32,6 +32,8 @@ digraph architecture{
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
   {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB;}
+  HotDB [label="HotDB\n(Direct Acyclic Graph of candidate chains)"]
+  ColdDB [label="ColdDB\n(Finalized chain)"]
 
   {rank = same; MainChain_Monitor SyncManager SyncProtocol;}
   ETH1_DepositContract -> MainChain_Monitor

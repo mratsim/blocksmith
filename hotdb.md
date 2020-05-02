@@ -78,22 +78,27 @@ Note: the current API described is synchronous. For implementation, the HotDB wi
 a separate thread sleeping on an incoming task channel that will activate on an incoming task.
 
 ```Nim
-type ValidBlockRoot = distinct Eth2Digest
+type
+  ValidBlockRoot = distinct Eth2Digest
+  ValidStateRoot = distinct Eth2Digest
+
+  BlockDAGNode = object
+    ## A node in the Direct Acyclic Graph of candidate chains.
 ```
 
 ### "Validated" service
 
 #### Existing
 ```Nim
-proc getBlockRange(db: HotDB, startSlot: Slot, skipStep: Natural, output: var openArray[BlockRef]): Natural
+proc getBlockRange(service: HotDB, startSlot: Slot, skipStep: Natural, output: var openArray[BlockRef]): Natural
   ## For sync_protocol.nim
-proc getBlockByPreciseSlot(db: HotDB, slot: Slot): BlockRef
+proc getBlockByPreciseSlot(service: HotDB, slot: Slot): BlockRef
   ## For `installBeaconApiHandlers` in beacon_node.nim
 ```
 
 #### New
 ```Nim
-proc pruneFinalized(db: HotDB, block_root: ValidBlockRoot)
+proc pruneFinalized(service: HotDB, block_root: ValidBlockRoot)
 ```
 
 ### "RewinderWorker"
@@ -121,9 +126,9 @@ The block smith owns the HotDB? It is responsible to ensure that
 #### New
 
 ```Nim
-proc init(db: type HotDB)
-proc init(db: type HotDB, serializedPath: string)
-proc shutdown(db: HotDB)
+proc init(service: type HotDB)
+proc init(service: type HotDB, serializedPath: string)
+proc shutdown(service: HotDB)
 ```
 
 ## Implementation
@@ -170,9 +175,9 @@ proc eventLoop(db: HotDB) {.gcsafe.} =
     task.fn(task.env)
 
 # Wrapper for sending a task
-template call(hotDB: HotDB, fnCall: typed{nkCall}) =
+template call(service: HotDB, fnCall: typed{nkCall}) =
   let hotDBTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object
-  hotDB.inTasks.send(hotDBTask)
+  service.inTasks.send(hotDBTask)
 ```
 
 ```
@@ -202,10 +207,10 @@ proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockRef], env
 Now we only need to define a public template that will handle the serialization and also ensure that the public routine signature is usable (and not an env pointer)
 
 ```Nim*
-template getBlockByPreciseSlot*(hotDB: HotDB, resultChan: Channel[BlockRef], db: HotDB, slot: Slot): untyped =
+template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockRef], hotDB: HotDB, slot: Slot): untyped =
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
-  hotDB.call getBlockByPreciseSlot(resultChan, db, slot)
+  service.call getBlockByPreciseSlot(resultChan, hotDB, slot)
 ```
 
 ## Verification

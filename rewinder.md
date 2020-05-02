@@ -52,6 +52,7 @@ The number of worker threads will depend on the available cores and memory const
 type
   ValidBlock = distinct SignedBeaconBlock
   StagingBlock = distinct SignedBeaconBlock
+  JustifiedSlot = Slot
 
   UpdateFlag* = enum
     skipMerkleValidation ##\
@@ -121,18 +122,18 @@ proc eventLoopSupervisor*(supervisor: Rewinder) {.gcsafe.} =
     # by an available worker and the corresponding worker function
     taskToRepackage.fn(supervisor, taskToRepackage)
 
-template call(rewinder: Rewinder, fnCall: typed{nkCall}) =
+template call(service: Rewinder, fnCall: typed{nkCall}) =
   let rewinderTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object
-  rewinder.inTasks.send(rewinderTask)
+  service.inTasks.send(rewinderTask)
 ```
 
-### isValidBeaconBlockEx()
+### isValidBeaconBlockP2PEx()
 
-`isValidBeaconBlockEx()` is the expensive block validation. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
+`isValidBeaconBlockP2PEx()` is the expensive block validation for the P2P service. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
 
 ```nim
-proc isValidBeaconBlockExWorker(
-       resultChan: ptr Channel[bool],
+proc isValidBeaconBlockP2PExWorker(
+       resultChan: ptr Channel[bool]],
        wrk: RewinderWorker,
        unsafeBlock: StagingBlock
      ) {.taskify.} =
@@ -163,7 +164,7 @@ proc isValidBeaconBlockExWorker(
            wrk.state.validators[proposer_index],
            signing_root.data, unsafeBlock.signature
          ):
-    debug "isValidBeaconBlockEx: block failed signature verification"
+    debug "isValidBeaconBlockP2PEx: block failed signature verification"
     resultChan.send false
     return
 
@@ -173,7 +174,7 @@ proc isValidBeaconBlockExWorker(
 The {.taskify.} pragma is a simple transformation to
 
 ```Nim
-proc isValidBeaconBlockExWorker(
+proc isValidBeaconBlockP2PExWorker(
        env: tuple[
          env_resultChan: ptr Channel[bool],
          env_wrk: RewinderWorker,
@@ -209,7 +210,7 @@ proc isValidBeaconBlockExWorker(
            wrk.state.validators[proposer_index],
            signing_root.data, unsafeBlock.signature
          ):
-    debug "isValidBeaconBlockEx: block failed signature verification"
+    debug "isValidBeaconBlockP2PEx: block failed signature verification"
     resultChan.send false
     return
 
@@ -219,7 +220,7 @@ proc isValidBeaconBlockExWorker(
 At the supervisor level we have the following indirection to dispatch to an available worker
 
 ```Nim
-type IsValidBeaconBlockExTask = ptr object
+type isValidBeaconBlockP2PExTask = ptr object
   fn: proc(env: pointer) {.nimcall.}
   env: tuple[
     resultChan: ptr Channel[bool],
@@ -227,41 +228,63 @@ type IsValidBeaconBlockExTask = ptr object
     unsafeBlock: StagingBlock
   ]
 
-proc dispatchIsValidBeaconBlockExToWorker(task: ptr RewinderTask, worker: RewinderWorker) =
+proc dispatchisValidBeaconBlockP2PExToWorker(task: ptr RewinderTask, worker: RewinderWorker) =
   # Edit the task argument.
   # Change the proc called and the worker
   # from
-  # - The public `isValidBeaconBlockEx()` to `isValidBeaconBlockExWorker()`
+  # - The public `isValidBeaconBlockP2PEx()` to `isValidBeaconBlockP2PExWorker()`
   # - A pointer `Rewinder` to the target `RewinderWorker`
   # and then sends the task to the worker channel.
-  let task = cast[IsValidBeaconBlockExTask](task)
-  task.fn = cast[pointer](isValidBeaconBlockExWorker)
+  let task = cast[isValidBeaconBlockP2PExTask](task)
+  task.fn = cast[pointer](isValidBeaconBlockP2PExWorker)
   task.env.wrk = cast[Rewinder](worker)
   worker.inTasks.send(task[])
 
-proc isValidBeaconBlockEx(supervisor: Rewinder, task: ptr RewinderTask) =
-  # This dispatches the isValidBeaconBlockEx to a free rewinderWorker
+proc isValidBeaconBlockP2PEx(supervisor: Rewinder, task: ptr RewinderTask) =
+  # This dispatches the isValidBeaconBlockP2PEx to a free rewinderWorker
 
   # 1. Check if there is a ready worker
   for i in 0 ..< workerPool.len:
     if workerPool[i].ready():
-      task.dispatchIsValidBeaconBlockExToWorker(supervisor.workerPool[i])
+      task.dispatchisValidBeaconBlockP2PExToWorker(supervisor.workerPool[i])
       return
 
   # 2. If we don't find any, pick a worker at random
   let workerID = supervisor.rng.rand(workerPool.len-1)
-  task.dispatchIsValidBeaconBlockExToWorker(supervisor.workerPool[workerID])
+  task.dispatchisValidBeaconBlockP2PExToWorker(supervisor.workerPool[workerID])
 
 # We expose a public template that allows the compiler/nimsuggest to check the argument types
 # and handle task serialization
 
-template isValidBeaconBlockEx(
-           rewinder: Rewinder
+template isValidBeaconBlockP2PEx(
+           service: Rewinder
            resultChan: ptr Channel[bool],
            wrk: Rewinder,
            unsafeBlock: StagingBlock
          ) =
-  rewinder.call isValidBeaconBlockEx(resultChan, wrk, unsafeBlock)
+  rewinder.call isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock)
+```
+
+
+### isValidBeaconBlockEx()
+
+`isValidBeaconBlockEx()` is the expensive block validation. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
+
+It updates the result channel with a None option if the block is invalid
+or the current justified slot after the block application.
+
+This replaces part of the functionality of `add` and `addResolved` in blockpool.nim.
+
+As an optimization, an `Option[JustifiedSlot]` is returned
+
+TODO
+
+```Nim
+proc isValidBeaconBlockEx(
+       resultChan: ptr Channel[Option[JustifiedSlot]],
+       wrk: RewinderWorker,
+       unsafeBlock: StagingBlock
+     )
 ```
 
 ### isValidationAttestationEx()
@@ -278,7 +301,7 @@ Note: there are several expensive isValidAttestation.
 - Lightweight validation before the full-blown checks (in `attestation_pool.addResolve()`)
 
 
-TODO: implementation is similar to `isValidBeaconBlockExWorker`/`proc isValidBeaconBlockEx`
+TODO: implementation is similar to `isValidBeaconBlockP2PExWorker`/`proc isValidBeaconBlockP2PEx`
 
 ### produceBlock()
 
@@ -400,7 +423,7 @@ proc produceBlock(supervisor: Rewinder, task: ptr RewinderTask) =
 
 # We expose a public template that allows the compiler/nimsuggest to check the argument types and handle task serialization
 template produceBlock*(
-      rewinder: Rewinder,
+      service: Rewinder,
       resultChan: ptr Channel[Option[BeaconBlock]],
       wrk: Rewinder,
       head: SignedBeaconBlock, slot: Slot,
@@ -413,7 +436,7 @@ template produceBlock*(
     ): untyped =
   ## Create a new block at target slot starting from the target head block
   ## The new block is NOT signed.
-  rewinder.call produceBlock(resultChan, wrk, head, wrk, head, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
+  service.call produceBlock(resultChan, wrk, head, wrk, head, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
 ```
 
 
