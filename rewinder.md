@@ -52,7 +52,6 @@ The number of worker threads will depend on the available cores and memory const
 type
   ClearedBlock = distinct SignedBeaconBlock
   QuarantinedBlock = distinct SignedBeaconBlock
-  JustifiedSlot = Slot
 
   UpdateFlag* = enum
     skipMerkleValidation ##\
@@ -81,6 +80,8 @@ type
   WorkerID = int
 
   StateTrail = tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]
+
+  RewinderTask = Task[RewinderEnvSize]
 
   Rewinder* = ptr object
     ## Rewinder supervisor
@@ -119,8 +120,10 @@ proc init(worker: RewinderWorker, supervisor: Rewinder, workerID: WorkerID) =
   worker.hotDB = supervisor.hotDB
   worker.stateTrailChan = createShared(Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]])
   worker.stateTrailChan.open(maxItems = 1) # We never request more than 1 stateTrail
-  worker.ready.store(true, moRelaxed)
-  worker.shutdown.store(true, moRelaxed)
+
+  # Signal ready
+  worker.ready.store(true, moRelease)
+  worker.shutdown.store(false, moRelease)
 
 template deref*(T: typedesc): typedesc =
   ## Return the base object type behind a ptr type
@@ -292,17 +295,18 @@ template isValidBeaconBlockP2PEx(
 `isValidBeaconBlockEx()` is the expensive block validation. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
 
 It updates the result channel with a None option if the block is invalid
-or the current justified slot after the block application.
+or a tuple of (current_justified_checkpoint, finalized_checkpoint) after the block application.
 
 This replaces part of the functionality of `add` and `addResolved` in blockpool.nim.
 
-As an optimization, an `Option[JustifiedSlot]` is returned
+The option `Option[tuple[justified, finalized: Checkpoint]]` is returned
+to be cached as DAG Metadata and avoid having to redo `state_transition` for fork_choice
 
 TODO
 
 ```Nim
 proc isValidBeaconBlockEx(
-       resultChan: ptr Channel[Option[JustifiedSlot]],
+       resultChan: ptr Channel[Option[tuple[justified, finalized: Checkpoint]]],
        wrk: RewinderWorker,
        unsafeBlock: QuarantinedBlock
      )

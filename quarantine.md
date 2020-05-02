@@ -24,7 +24,6 @@ The `Quarantine` module is "filter" implemented as a state machine that:
 type
   ValidBlock = distinct SignedBeaconBlock
   QuarantinedBlock = distinct SignedBeaconBlock
-  JustifiedSlot = Slot
 
   UpdateFlag* = enum
     skipMerkleValidation ##\
@@ -63,18 +62,22 @@ type
 
 proc init(quarantine: Quarantine, rewinder: Rewinder, slashingDetector: SlashingDetectionAndProtection) =
   doAssert not quarantine.isNil, "Memory should be allocated before calling init"
-  doAssert shutdown, "Quarantine should be initialized from the shutdown state"
+  doAssert shutdown.load(moRelaxed), "Quarantine should be initialized from the shutdown state"
+  quarantine.inNetworkBlocks = createShared(Channel[QuarantinedBlock])
   quarantine.inNetworkBlocks.open(maxitems = 0)
+  quarantine.inNetworkAttestations = createShared(Channel[QuarantinedAttestation])
   quarantine.inNetworkAttestations.open(maxitems = 0)
   quarantine.outSlashableBlocks.open(maxitems = 0)
   quarantine.outClearedAttestations.open(maxitems = 0)
 
   quarantineDB.init(quarantine.inNetworkBlocks, quarantine.inNetworkAttestations)
 
-  # Signal ready
-  quarantine.shutdown.store(moRelease, false)
+  # Internal result channels are initialized on an as-needed basis.
 
-  # Internal result channels
+  # Signal ready
+  quarantine.shutdown.store(false, moRelease)
+
+
 
 proc teardown(quarantine: Quarantine) =
   doAssert quarantine.shutdown
@@ -109,20 +112,15 @@ proc sendForValidation(
   rewinder.isValidAttestationP2PEx(isAttCleared.chan, rewinder, qAtt)
 
 # TODO: state machine
-type ProcessedEvent = enum
-  DrainedNetworkBlocks
-  DrainedNetworkAttestations
-  CollectedClearedBlocks
-  CollectedClearedAttestations
 
-proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtection) {.gcsafe.} =
-  service.quarantineDB.init()
+proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: SlashingDetectionAndProtection) {.gcsafe.} =
+  service.init(rewinder, slashingDetector)
 
   var backoff = 1 # Simple exponential backoff
-  var processedEvents: set[ProcessedEvent]
   while not service.shutdown:
     var dataAvailable = true
     var rIndex = 0
+    var processedAtLeastAnEvent = false
 
     block: # 1. Drain the network blocks
       var qBlock: QuarantinedBlock
@@ -133,13 +131,13 @@ proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtec
         while true:
           if service.areBlocksCleared[rIndex].free:
             sendForValidation(service.areBlocksCleared[rIndex], service.rewinder, qBlock)
-            processedEvents.incl(DrainedNetworkBlocks)
+            processedAtLeastAnEvent = true
             break
           if rIndex == service.areBlocksCleared.len:
             service.areBlocksCleared.setLen(service.areBlocksCleared + 1)
             service.areBlocksCleared[rIndex].init()
             sendForValidation(service.areBlocksCleared[rIndex], service.rewinder, qBlock)
-            processedEvents.incl(DrainedNetworkBlocks)
+            processedAtLeastAnEvent = true
             break
           inc rIndex
 
@@ -153,13 +151,13 @@ proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtec
         while true:
           if service.areAttestationsCleared[rIndex].free:
             sendForValidation(service.areAttestationsCleared[rIndex], service.rewinder, qAtt)
-            processedEvents.incl(DrainedNetworkAttestations)
+            processedAtLeastAnEvent = true
             break
           if rIndex == service.areAttestationsCleared.len:
             service.areAttestationsCleared.setLen(service.areAttestationsCleared + 1)
             service.areAttestationsCleared[rIndex].init()
             sendForValidation(service.areAttestationsCleared[rIndex], service.rewinder, qAtt)
-            processedEvents.incl(DrainedNetworkAttestations)
+            processedAtLeastAnEvent = true
             break
           inc rIndex
 
@@ -182,7 +180,7 @@ proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtec
             debug "Invalid Block",
               blck = $shortLog(service.areBlocksCleared[i].blck)
             # TODO: message to PeerPool
-          processedEvents.incl(CollectedClearedBlocks)
+          processedAtLeastAnEvent = true
           service.areBlocksCleared[i].free = true
 
     block: # 5. Collect cleared attestations
@@ -201,10 +199,10 @@ proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtec
             debug "Invalid Attestation",
               blck = $shortLog(service.areAttestationsCleared[i].att)
             # TODO: message to PeerPool
-          processedEvents.incl(CollectedClearedAttestations)
+          processedAtLeastAnEvent = true
           service.areAttestationsCleared[i].free = true
 
-    if processedEvents.card() == 0:
+    if not processedAtLeastAnEvent:
       # No event processed, backoff
       sleep(backoff)
       backoff *= 2

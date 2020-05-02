@@ -26,8 +26,9 @@ digraph architecture{
 
   node [shape = record]; RewinderWorkerPool;
   node [shape = box]; BeaconState_X;
+  BeaconState_X [label="Consensus Engine X\n(BeaconState X)"]
 
-  RewinderWorkerPool [label="{RewinderWorkerPool | {<bs0>BeaconState 0|<bs1>BeaconState 1|<bs2>BeaconState 2|<bs3>BeaconState 3}}"];
+  RewinderWorkerPool [label="{RewinderWorkerPool | {<bs0>Consensus Engine 0\n(BeaconState 0)|<bs1>Consensus Engine 1\n(BeaconState 1)|<bs2>Consensus Engine 2\n(BeaconState 2)|<bs3>Consensus Engine N\n(BeaconState N)}}"];
   {rank = same; RewinderWorkerPool BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
@@ -70,7 +71,7 @@ digraph architecture{
   Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
   Clearance -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
 
-  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync"]
+  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync Out\naddClearedBlock()"]
 
   Rewinder -> RewinderWorkerPool [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
   RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()\ngetIntermediateBeaconStatesForCaching()"]
@@ -79,5 +80,5 @@ digraph architecture{
   Clearance -> Rewinder [dir="both", label="produceBlock()"]
 
 
-  Clearance -> ColdDB [dir="both", label="pushFinalizedChain()\nSync"]
+  Clearance -> ColdDB [dir="both", label="pushFinalizedChain()\nSync Out"]
 }

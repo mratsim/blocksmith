@@ -94,7 +94,7 @@ proc getCallArgs(procCall: NimNode): tuple[args, argsTy: NimNode] =
     result.args.add procCall[i]
     result.argsTy.add getTypeInst(procCall[i])
 
-proc sizeCheck*(procSym, argsTy: NimNode, MaxEnvSize: int): NimNode =
+proc sizeCheck(procSym, argsTy: NimNode, MaxEnvSize: int): NimNode =
   # Check that the type is safely serializable
   result = newStmtList()
   let fnName = $procSym

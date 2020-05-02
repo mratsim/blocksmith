@@ -64,3 +64,15 @@ The architecture has the following disadvantages:
 ### Implementation notes
 
 The implementation support document on each service assumes almost no available abstraction to handle cross-thread communications and function calls. A CSP, actor, micro-service abstraction or alternatively built-in support of thread-safe closures in Nim would significantly improve the ergonomy of the implementation.
+
+### Utilities
+
+The following types and routines:
+- `Task`
+- `servicify`
+- `crossServiceCall`
+are implemented in [cross_service_calls.nim](cross_service_calls.nim).
+They respectively:
+- define a Task i.e. a function call + context (environement/closure)
+- create a wrapper function that can receive an properly unpack such Tasks
+- pack a function call + arguments so that it can be send through a channel.
