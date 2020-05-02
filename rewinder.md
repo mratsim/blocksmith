@@ -25,9 +25,7 @@ The Rewinder service is a primary target of DOS attacks via forged attestations 
 Additional sanity prechecks on attestations and blocks SHALL be done to further reduce the computational cost.
 
 The rewinder service can be multithreaded with a `RewinderSupervisor` managing a pool of `RewinderWorker`.
-The supervisor distributes a task with:
-- `prepareTargetBlockSlot(worker: var RewinderWorker, blck: Block, slot: Slot)` to initialize the `RewinderWorker` to a certain block+slot
-- `state_transition(worker: var RewinderWorker, signedBlock: BeaconBlock, flags: UpdateFlags): bool` to apply an ETH2 state_transition as specified in phase0.
+The supervisor distributes a task by rewriting its address with a free or a random worker address.
 
 In particular, there is no more need of a rollback procedure to handle partial state updates.
 
@@ -90,6 +88,7 @@ type
     workerpool: seq[RewinderWorker]
     threadpool: seq[Thread[Rewinder, WorkerID]]
     hotDB: HotDB
+    forkChoice: ForkChoice
     rng: Rand # from std/random
     shutdown: bool
     logFile: string
@@ -102,6 +101,7 @@ type
     state: BeaconState
     blocks: seq[ClearedBlock]
     hotDB: HotDB
+    forkChoice: ForkChoice
     ## The channel sent to the HotDB to answer `getReplayStateTrail` queries
     stateTrailChan: ptr Channel[StateTrail]
     shutdown: bool
@@ -118,6 +118,7 @@ proc init(worker: RewinderWorker, supervisor: Rewinder, workerID: WorkerID) =
   worker.inTasks = createShared(Channel[RewinderTask])
   worker.inTasks.open(maxItems = 0)
   worker.hotDB = supervisor.hotDB
+  worker.forkChoice = supervisor.forkChoice
   worker.stateTrailChan = createShared(Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]])
   worker.stateTrailChan.open(maxItems = 1) # We never request more than 1 stateTrail
 
@@ -131,7 +132,7 @@ template deref*(T: typedesc): typedesc =
 
 proc eventLoopWorker*(service: Rewinder, workerID: WorkerID) {.gcsafe.}
 
-proc init(service: Rewinder, hotDB: HotDB) =
+proc init(service: Rewinder, hotDB: HotDB, forkChoice: ForkChoice) =
   doAssert not service.isNil
   doAssert service.shutdown
 
@@ -167,7 +168,7 @@ proc eventLoopWorker*(service: Rewinder, workerID: WorkerID) {.gcsafe.} =
 
   worker.teardown()
 
-proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB) {.gcsafe.} =
+proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB, forkChoice: ForkChoice) {.gcsafe.} =
   ## This event loop is slightly different as we need to repackage the task
   ## and send it to an available worker.
   supervisor.init(hotDB)
@@ -185,6 +186,8 @@ proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB) {.gcsafe.} =
 ### isValidBeaconBlockP2PEx()
 
 `isValidBeaconBlockP2PEx()` is the expensive block validation for the P2P service. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
+>   - https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/p2p-interface.md#global-topics\
+>   - https://github.com/status-im/nim-beacon-chain/blob/c3cdb399/beacon_chain/block_pool.nim#L1052-L1159\
 
 ```nim
 proc isValidBeaconBlockP2PExWorker(
@@ -290,29 +293,35 @@ template isValidBeaconBlockP2PEx(
   service.inTasks.send task
 ```
 
-### isValidBeaconBlockEx()
+### tryClearQuarantinedBlock()
 
-`isValidBeaconBlockEx()` is the expensive block validation. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
+`tryClearQuarantinedBlock()` is an expensive block validation. Expensive as it involves loading the beacon state prior to apply the block and check if the block is conistent with the state.
 
-It updates the result channel with a None option if the block is invalid
-or a tuple of (current_justified_checkpoint, finalized_checkpoint) after the block application.
+> https://github.com/status-im/nim-beacon-chain/blob/c3cdb399/beacon_chain/block_pool.nim#L447-L483
+
+TODO: merge with isValidBeaconBlockP2PEx
 
 This replaces part of the functionality of `add` and `addResolved` in blockpool.nim.
+TODO: instead of returning a bool, we might want to return an error enum
+      that will be used for peer scoring
 
-The option `Option[tuple[justified, finalized: Checkpoint]]` is returned
-to be cached as DAG Metadata and avoid having to redo `state_transition` for fork_choice
+Upon success:
+- this automatically sends the resulting BeaconState and the BeaconBlock
+to the HotDB for caching.
+- this automatically sends the BeaconBlock, current_justified_checkpoint, finalized_checkpoint
+  to the fork choice
 
 TODO
 
 ```Nim
-proc isValidBeaconBlockEx(
-       resultChan: ptr Channel[Option[tuple[justified, finalized: Checkpoint]]],
+proc tryClearQuarantinedBlock(
+       resultChan: ptr Channel[bool],
        wrk: RewinderWorker,
        unsafeBlock: QuarantinedBlock
      )
 ```
 
-### isValidationAttestationEx()
+### tryClearQuarantinedBlock()
 
 Note: there are several expensive isValidAttestation.
 - 1 before signature aggregation (`isValidAttestation`): https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/p2p-interface.md#attestation-subnets

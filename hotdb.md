@@ -121,7 +121,7 @@ Depends on a way to add new cached states, as mentioned in the transition period
 
 ### "BlockSmith"
 
-The block smith owns the HotDB? It is responsible to ensure that
+The Blocksmith service owns the HotDB. It is responsible to ensure that
 - the HotDB is started before the services that depends on it (Clearance and Rewinder services)
 - the Clearance and Rewinder services are stopped before shutting the HotDB down.
 
@@ -137,6 +137,17 @@ proc shutdown(service: HotDB)
 
 The implementation of the HotDB is an event loop waiting for incoming tasks.
 It is run on a long-running thread created by the Blocksmith.
+
+The event loop should:
+1. receive all incoming BeaconBlock+BeaconState pairs.
+   Those are enqueued by the RewinderWorkers on a successful `tryClearQuarantinedBlock`.
+2. Handle incoming tasks
+3. Do maintenance on the DAG, in particular drop some cached BeaconState
+4. Exponential backoff if idle
+
+> TODO:
+>   On `produceBlock()` + `signBlock()` we should also update the HotDB. However this would mean that the `Clearance` module manipulates state which is undesirable.
+>   The RewinderWorkers can directly connect to the KeySigning service instead
 
 
 ```Nim
@@ -156,12 +167,14 @@ const EnvSize = max(
 )
 
 type
-  HotDBTask = object
-    fn: proc(env: pointer) {.nimcall.}
-    env: array[EnvSize, byte]
+  ClearedBlock = distinct SignedBeaconBlock
+  QuarantinedBlock = distinct SignedBeaconBlock
+
+  HotDBTask = Task[EnvSize]
 
   HotDB = ptr object
-    inTasks: Channel[HotDBTask]
+    inTasks: ptr Channel[HotDBTask]
+    inBlocksAndStates: ptr Channel[tuple[blck: ClearedBlock, state: BeaconState]] # A channel to receive BeaconBlock/BeaconState for caching
     shutdown: bool
     blocks: Table[ClearedBlockRoot, BlockDAGNode]
     states: Table[ClearedBlockRoot, ClearedStateRoot]
@@ -169,13 +182,26 @@ type
     logFile: string
     logLevel: LogLevel
 
+proc init(db: HotDB) =
+  doAssert not db.isNil, "Memory should be allocated before calling init"
+  doAssert shutdown.load(moRelaxed), "Quarantine should be initialized from the shutdown state"
+
+  db.inTasks = createShared(Channel[HotDBTask])
+  db.inTasks.open(maxItems = 0)
+  db.inBlocksAndStates = createShared(Channel[tuple[blck: ClearedBlock, state: BeaconState]])
+  db.inBlocksAndStates.open(maxItems = 0)
+
+  # Signal ready
+  worker.shutdown.store(false, moRelease)
+
 proc eventLoop(db: HotDB) {.gcsafe.} =
+  db.init()
+
   while not shutdown:
     # Block until we receive a task
     let task = db.inTasks.recv()
     # Process it
     task.fn(task.env)
-
 ```
 
 ```

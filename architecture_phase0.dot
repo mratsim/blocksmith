@@ -1,9 +1,9 @@
 digraph architecture{
   node [shape = signature]; KeySigning [label="KeySigning (isolated process)"];
-  node [shape = octagon]; SyncManager SyncProtocol MainChain_Monitor Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz Rewinder ForkChoice;
+  node [shape = octagon]; SyncManager SyncProtocol MainChain_Monitor Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz ForkChoice;
   ETH2_API [label="ETH2.0-API (REST)"];
   Slashing [label="Slashing Detection & Protection"];
-  ForkChoice [label="Fork Choice Engine\n(ProtoArray)"];
+  ForkChoice [label="Fork Choice - Proof-Of-Stake\n(ProtoArray)"];
   {rank = source; ETH1_DepositContract LibP2P ETH2_API CLI Time ValidatorUI;}
 
   node [shape = record] BeaconNode;
@@ -24,12 +24,12 @@ digraph architecture{
   node [shape = record]; QuarantinedDB;
   QuarantinedDB [label="QuarantinedDB | {Unresolved Blocks | Unresolved Attestations}"];
 
-  node [shape = record]; RewinderWorkerPool;
+  node [shape = record]; Rewinder;
   node [shape = box]; BeaconState_X;
   BeaconState_X [label="Consensus Engine X\n(BeaconState X)"]
 
-  RewinderWorkerPool [label="{RewinderWorkerPool | {<bs0>Consensus Engine 0\n(BeaconState 0)|<bs1>Consensus Engine 1\n(BeaconState 1)|<bs2>Consensus Engine 2\n(BeaconState 2)|<bs3>Consensus Engine N\n(BeaconState N)}}"];
-  {rank = same; RewinderWorkerPool BeaconState_X;}
+  Rewinder [label="{Rewinder service + Worker pool|{<bs0>Consensus Engine 0\n(BeaconState 0)|<bs1>Consensus Engine 1\n(BeaconState 1)|<bs2>Consensus Engine 2\n(BeaconState 2)|<bsN>Consensus Engine N\n(BeaconState N)}}"];
+  {rank = same; Rewinder BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
   {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB QuarantinedDB;}
@@ -62,21 +62,21 @@ digraph architecture{
   BeaconNode:PeerPool -> LibP2P [label="Blocks proposed\nAggregate attestations"]
   ETH2_API -> BeaconNode [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
 
-  Clearance -> ForkChoice [dir="both", label="process_attestation()\nprocess_block()\nfind_head()\nmaybe_prune()"]
+  Clearance -> ForkChoice [dir="both", label="find_head()\nmaybe_prune()"]
+  Rewinder:bsN -> ForkChoice [label="process_attestation()\nprocess_block()"]
 
   Quarantine -> Slashing [dir="both", label="isSlashable()"]
-  Clearance -> KeySigning [dir="both", label="signBlock()"]
+  Rewinder:bs1 -> KeySigning [dir="both", label="signBlock()"]
   KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
   Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
   Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
   Clearance -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
 
-  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync Out\naddClearedBlock()"]
+  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync Out"]
 
-  Rewinder -> RewinderWorkerPool [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
-  RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()\ngetIntermediateBeaconStatesForCaching()"]
+  Rewinder:bs2 -> HotDB [dir="both", label="getReplayStateTrail()\naddClearedBlockAndState()\ngetIntermediateBeaconStatesForCaching()"]
 
-  Quarantine -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
+  Quarantine -> Rewinder [dir="both", label="tryClearQuarantinedBlock()\ntryClearQuarantinedAttestation()"]
   Clearance -> Rewinder [dir="both", label="produceBlock()"]
 
 
