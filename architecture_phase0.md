@@ -1,6 +1,6 @@
 # Architecture
 
-![Architecture](architecture_phase0.png)
+![Architecture](https://raw.githubusercontent.com/mratsim/blocksmith/master/architecture_phase0.png)
 
 The desired architecture of NBC (nim-beacon-chain) is the following:
 - An API layer composed of "Beacon Node" + PeerPool.

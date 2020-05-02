@@ -21,7 +21,7 @@ The RFC has the following goals:
 
 The architecture is detailed in [architecture_phase0.md](architecture_phase0.md)
 
-![architecture_phase0.png](architecture_phase0.png)
+![Architecture](https://raw.githubusercontent.com/mratsim/blocksmith/master/architecture_phase0.png)
 
 ## Services
 
@@ -36,4 +36,3 @@ It is in charge of all operations that are applied to a certain state of the blo
 - validating a block
 - validating an attestation
 - producing a new block
-
