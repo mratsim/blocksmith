@@ -77,6 +77,10 @@ const EnvSize = max(
 )
 
 type
+  WorkerID = int
+
+  StateTrail = tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]
+
   RewinderTask = object
     fn: proc(env: pointer) {.nimcall.}
     env: array[EnvSize, byte]
@@ -85,25 +89,74 @@ type
     ## Rewinder supervisor
     ## Manages a pool of worker and dispatch the tasks to them.
     inTasks: Channel[RewinderTask]
-    workerPool: seq[RewinderWorker]
+    workerpool: seq[RewinderWorker]
+    threadpool: seq[Thread[Rewinder, WorkerID]]
+    hotDB: HotDB
     rng: Rand # from std/random
     shutdown: bool
     logFile: string
     logLevel: LogLevel
 
   RewinderWorker = ptr object
-    inTasks: Channel[RewinderTask]
+    supervisor: Rewinder
+    workerID: RewinderWorkerID
+    inTasks: ptr Channel[RewinderTask]
     state: BeaconState
     blocks: seq[ClearedBlock]
     hotDB: HotDB
     ## The channel sent to the HotDB to answer `getReplayStateTrail` queries
-    stateTrailChan: Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]]
+    stateTrailChan: ptr Channel[StateTrail]
     shutdown: bool
     logFile: string
     logLevel: LogLevel
     ready: Atomic[bool]
 
-proc eventLoopWorker*(worker: RewinderWorker) {.gcsafe.} =
+proc init(worker: RewinderWorker, supervisor: Rewinder, workerID: WorkerID) =
+  doAssert not worker.isNil
+  doAssert worker.shutdown
+
+  worker.supervisor = supervisor
+  worker.workerID = workerID
+  worker.inTasks = createShared(Channel[RewinderTask])
+  worker.inTasks.open(maxItems = 0)
+  worker.hotDB = supervisor.hotDB
+  worker.stateTrailChan = createShared(Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]])
+  worker.stateTrailChan.open(maxItems = 1) # We never request more than 1 stateTrail
+  worker.ready.store(true, moRelaxed)
+  worker.shutdown.store(true, moRelaxed)
+
+template deref*(T: typedesc): typedesc =
+  ## Return the base object type behind a ptr type
+  typeof(default(T)[])
+
+proc eventLoopWorker*(service: Rewinder, workerID: WorkerID) {.gcsafe.}
+
+proc init(service: Rewinder, hotDB: HotDB) =
+  doAssert not service.isNil
+  doAssert service.shutdown
+
+  service.inTasks = createShared(Channel[RewinderTask])
+  service.inTasks.open(maxItems = 0)
+  service.hotDB = hotDB
+  service.rng = initRand(0xDECAF)
+
+  # Initialize workers
+  let numCpus = countProcessors()
+  service.workerpool.newSeq(numCpus)
+  service.threadpool.newSeq(numCpus)
+
+  for i in 0 ..< numCpus:
+    service.workerpool[i] = createShared(deref(RewinderWorker))
+    service.threadpool[i].createThread(eventLoopWorker, service, WorkerID(i))
+
+# TODO - also who frees the memory of the Rewinder service?
+proc teardown(service: Rewinder)
+proc teardown(worker: RewinderWorker)
+
+proc eventLoopWorker*(service: Rewinder, workerID: WorkerID) {.gcsafe.} =
+  let worker = service.workerpool[workerID]
+  worker.init(service, workerID)
+
   while not shutdown:
     # Block until we receive a task
     let task = worker.inTasks.recv()
@@ -112,15 +165,21 @@ proc eventLoopWorker*(worker: RewinderWorker) {.gcsafe.} =
     task.fn(task.env)
     worker.ready.store(moRelease, true)
 
-proc eventLoopSupervisor*(supervisor: Rewinder) {.gcsafe.} =
+  worker.teardown()
+
+proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB) {.gcsafe.} =
   ## This event loop is slightly different as we need to repackage the task
   ## and send it to an available worker.
+  supervisor.init(hotDB)
+
   while not shutdown:
     var taskToRepackage = supervisor.inTasks.recv()
     # taskToRepackage will be edited in-place
     # to replace instances of "supervisor" and the task function
     # by an available worker and the corresponding worker function
     taskToRepackage.fn(supervisor, taskToRepackage)
+
+  supervisor.teardown()
 
 template call(service: Rewinder, fnCall: typed{nkCall}) =
   let rewinderTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object

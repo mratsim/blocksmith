@@ -58,6 +58,9 @@ type
     areBlocksCleared: seq[tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], free: bool]]
     areAttestationsCleared: seq[tuple[att: QuarantinedAttestation, chan: ptr Channel[bool], free: bool]]
 
+    logFile: string
+    logLevel: LogLevel
+
 proc init(quarantine: Quarantine, rewinder: Rewinder, slashingDetector: SlashingDetectionAndProtection) =
   doAssert not quarantine.isNil, "Memory should be allocated before calling init"
   doAssert shutdown, "Quarantine should be initialized from the shutdown state"
@@ -72,6 +75,15 @@ proc init(quarantine: Quarantine, rewinder: Rewinder, slashingDetector: Slashing
   quarantine.shutdown.store(moRelease, false)
 
   # Internal result channels
+
+proc teardown(quarantine: Quarantine) =
+  doAssert quarantine.shutdown
+  quarantine.inNetworksBlocks.close()
+  quarantine.inNetworkAttestations.close
+  quarantine.quarantineDB.shutdown.store(true, moRelease)
+
+  # Do we do the freeing here or leave that to the owner?
+  quarantine.freeShared()
 
 proc init(isBlockCleared: var tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], free: bool]) =
   isBlockCleared.free = true
@@ -202,5 +214,5 @@ proc eventLoop(service: Quarantine, slashingDetector: SlashingDetectionAndProtec
       backoff = 1
 
   # Shutdown - free all memory
-  service.delete()
+  service.teardown()
 ```

@@ -108,9 +108,11 @@ Note: the result will actually be returned by channel
 #### New
 
 ```Nim
-proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ClearedBlockRoot)
+type StateTrail = tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]
 
-proc getReplayStateTrail(chan: ptr Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]], db: HotDB, block_root: ClearedBlockRoot, slot: Slot)
+proc getReplayStateTrail(chan: ptr Channel[StateTrail], db: HotDB, block_root: ClearedBlockRoot)
+
+proc getReplayStateTrail(chan: ptr Channel[StateTrail], db: HotDB, block_root: ClearedBlockRoot, slot: Slot)
 ```
 
 ### Depends
