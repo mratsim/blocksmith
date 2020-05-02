@@ -176,15 +176,11 @@ proc eventLoop(db: HotDB) {.gcsafe.} =
     # Process it
     task.fn(task.env)
 
-# Wrapper for sending a task
-template call(service: HotDB, fnCall: typed{nkCall}) =
-  let hotDBTask = serializeTask(fnCall) # <-- serializeTask is a macro that copyMem the function pointer and its arguments into a task object
-  service.inTasks.send(hotDBTask)
 ```
 
 ```
 # Example task
-proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) {.taskify.}=
+proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
   let found = db.getBlockBySlot(slot)
@@ -192,27 +188,18 @@ proc getBlockByPreciseSlot(resultChan: Channel[BlockDAGNode], db: HotDB, slot: S
   resultChan.send(r)
 ```
 
-The {.taskify.} pragma is a simple transformation to an implementation proc that process an `env` closure context.
-
-```Nim
-proc getBlockByPreciseSlot(env: ptr tuple[env_resultChan: Channel[BlockDAGNode], env_db: HotDB, env_slot: Slot]) =
-  template resultChan: untyped {.dirty.} = env.env_resultChan
-  template db: untyped {.dirty.} = env.env_db
-  template slot: untyped {.dirty.} = env.env_slot
-  ## Retrieves a block from the canonical chain with a slot
-  ## number equal to `slot`.
-  let found = db.getBlockBySlot(slot)
-  let r = if found.slot != slot: found else: nil
-  resultChan.send(r)
-```
-
-Now we only need to define a public template that will handle the serialization and also ensure that the public routine signature is usable (and not an env pointer)
+Now we only need to define a public template that will handle the serialization via the crossServiceCall macro
 
 ```Nim*
-template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], hotDB: HotDB, slot: Slot): untyped =
+template getBlockByPreciseSlot*(service: HotDB, resultChan: Channel[BlockDAGNode], db: HotDB, slot: Slot) =
   ## Retrieves a block from the canonical chain with a slot
   ## number equal to `slot`.
-  service.call getBlockByPreciseSlot(resultChan, hotDB, slot)
+  bind HotDBEnvSize
+  let task = crossServiceCall(
+    getBlockByPreciseSlot(resultChan, db, slot),
+    HotDBEnvSize
+  )
+  service.inTasks.send task
 ```
 
 ## Verification

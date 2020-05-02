@@ -69,21 +69,18 @@ type
 
   UpdateFlags* = set[UpdateFlag]
 
-const EnvSize = max(
+const RewinderEnvSize = max(
   # produceBlock
   ResultChannelSize + sizeof(RewinderSupervisor) + sizeof(SignedBeaconBlock) +
     sizeof(slot) + sizeof(Eth2Digest) + sizeof(ValidatorSig) + sizeof(Eth1Data) +
     sizeof(Eth2Digest) + sizeof(seq[Attestation]) + sizeof(seq[Deposits]),
+  0 # other cross-service calls
 )
 
 type
   WorkerID = int
 
   StateTrail = tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]
-
-  RewinderTask = object
-    fn: proc(env: pointer) {.nimcall.}
-    env: array[EnvSize, byte]
 
   Rewinder* = ptr object
     ## Rewinder supervisor
@@ -195,57 +192,11 @@ proc isValidBeaconBlockP2PExWorker(
        resultChan: ptr Channel[bool]],
        wrk: RewinderWorker,
        unsafeBlock: QuarantinedBlock
-     ) {.taskify.} =
+     ) =
   ## Expensive block validation.
   ## The unsafeBlock parent MUST be in the HotDB before calling this proc
 
   wrk.hotDB.getReplayStateTrail(wrk.stateTrailChan.addr, wrk.hotDB, unsafeBlock.parent_root))
-
-  # Block until we get the stateTrail
-  # TODO: we can optimize the copy to not reallocate
-  (wrk.state, wrk.blocks) = wrk.stateTrailChan.recv()
-
-  # Move the local worker state to the desired state
-  wrk.state.apply(wrk.blocks) # `apply` is an internal procs that applies each `ValidBeaconBlock`
-
-  # Check that the proposer signature, signed_beacon_block.signature, is valid with
-  # respect to the proposer_index pubkey.
-  let
-    blockRoot = hash_tree_root(unsafeBlock.message)
-    domain = get_domain(wrk.state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(unsafeBlock.message.slot))
-    signing_root = compute_signing_root(blockRoot, domain)
-    proposer_index = unsafeBlock.message.proposer_index
-
-  if proposer_index >= wrk.state.validators.len.uint64:
-    resultChan.send false
-    return
-  if not blsVerify(
-           wrk.state.validators[proposer_index],
-           signing_root.data, unsafeBlock.signature
-         ):
-    debug "isValidBeaconBlockP2PEx: block failed signature verification"
-    resultChan.send false
-    return
-
-  resultChan.send true
-```
-
-The {.taskify.} pragma is a simple transformation to
-
-```Nim
-proc isValidBeaconBlockP2PExWorker(
-       env: tuple[
-         env_resultChan: ptr Channel[bool],
-         env_wrk: RewinderWorker,
-         env_unsafeBlock: QuarantinedBlock
-     ]) =
-  ## Expensive block validation.
-  ## The unsafeBlock parent MUST be in the HotDB before calling this proc
-  template resultChan: untyped {.dirty.} = env.env_resultChan
-  template wrk: untyped {.dirty.} = env.env_wrk
-  template unsafeBlock {.dirty.} = env.env_unsafeBlock
-
-  wrk.hotDB.call(getReplayStateTrail(wrk.stateTrailChan.addr, wrk.hotDB, unsafeBlock.parent_root))
 
   # Block until we get the stateTrail
   # TODO: we can optimize the copy to not reallocate
@@ -312,18 +263,18 @@ proc isValidBeaconBlockP2PEx(supervisor: Rewinder, task: ptr RewinderTask) =
   let workerID = supervisor.rng.rand(workerPool.len-1)
   task.dispatchisValidBeaconBlockP2PExToWorker(supervisor.workerPool[workerID])
 
-# We expose a public template that allows the compiler/nimsuggest to check the argument types
-# and handle task serialization
+# We expose a public template for cross-service calls
 
 template isValidBeaconBlockP2PEx(
-           service: Rewinder
+           service: Rewinder,
            resultChan: ptr Channel[bool],
            wrk: Rewinder,
            unsafeBlock: QuarantinedBlock
          ) =
-  rewinder.call isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock)
+  bind RewinderEnvSize
+  let task = crossServiceCall isValidBeaconBlockP2PEx(resultChan, wrk, unsafeBlock), RewinderEnvSize
+  service.inTasks.send task
 ```
-
 
 ### isValidBeaconBlockEx()
 
@@ -377,52 +328,12 @@ proc produceBlockWorker(
       graffiti: Eth2Digest,
       attestations: seq[Attestation],
       deposits: seq[Deposit]
-    ) {.taskify.} =
+    ) =
   ## Create a new block at target slot starting from the target head block
   ## The new block is NOT signed.
 
   let resultChan = wrk.stateTrailChan.addr
   hotDB.call(getReplayStateTrail(resultChan, hotDB, head.root, slot - 1))
-
-  # Block until we get the stateTrail
-  # TODO: we can optimize the copy to not reallocate
-  (wrk.state, wrk.blocks) = resultChan.recv()
-
-  # Move the local worker state to the desired state
-  wrk.state.apply(wrk.blocks) # `apply` is an internal procs that applies each `ValidBeaconBlock`
-
-  # Send the result
-  resultChan.send makeBeaconBlock(wrk.state, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
-```
-
-The {.taskify.} pragma is a simple transformation to an implementation proc that process an `env` closure context.
-
-```Nim
-proc produceBlockWorker(
-       env: tuple[
-         env_resultChan: ptr Channel[Option[BeaconBlock]],
-         env_wrk: RewinderWorker,
-         env_head: SignedBeaconBlock, slot: Slot,
-         env_parent_root: Eth2Digest,
-         env_randao_reveal: ValidatorSig;
-         env_eth1_data: Eth1Data,
-         env_graffiti: Eth2Digest,
-         env_attestations: seq[Attestation],
-         env_deposits: seq[Deposit]
-       ]) =
-  ## Create a new block at target slot starting from the target head block
-  ## The new block is NOT signed.
-  template resultChan: untyped {.dirty.} = env.env_resultChan
-  template wrk: untyped {.dirty.} = env.env_wrk
-  template head: untyped {.dirty.} = env.env_head
-  template parent_root: untyped {.dirty.} = env.env_parent_root
-  template randao_reveal: untyped {.dirty.} = env.env_randao_reveal
-  template eth1_data: untyped {.dirty.} = env.env_eth1_data
-  template graffiti: untyped {.dirty.} = env.env_graffiti
-  template attestations: untyped {.dirty.} = env.env_attestations
-  template deposits: untyped {.dirty.} = env.env_deposits
-
-  wrk.hotDB.call(getReplayStateTrail(wrk.stateTrailChan.addr, wrk.hotDB, head.root, slot - 1))
 
   # Block until we get the stateTrail
   # TODO: we can optimize the copy to not reallocate
