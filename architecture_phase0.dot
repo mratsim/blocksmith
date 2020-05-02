@@ -31,7 +31,7 @@ digraph architecture{
   {rank = same; RewinderWorkerPool BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
-  {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB;}
+  {rank = sink; AttestationDB SignedBlockDB HotDB ColdDB QuarantinedDB;}
   HotDB [label="HotDB\n(Direct Acyclic Graph of candidate chains)"]
   ColdDB [label="ColdDB\n(Finalized chain)"]
 
@@ -46,7 +46,7 @@ digraph architecture{
   ValidatorUI -> BeaconNode
   Time -> BeaconNode
   BeaconNode -> Blocksmith [dir=both color="black:black"]
-  BeaconNode -> QuarantinedDB
+  BeaconNode -> Quarantine
   Blocksmith -> Quarantine [dir=both color="black:black"]
   Blocksmith -> Clearance [dir=both color="black:black"]
   Quarantine -> QuarantinedDB [dir=both label="resolve()"]
@@ -73,7 +73,7 @@ digraph architecture{
   Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync"]
 
   Rewinder -> RewinderWorkerPool [dir="both", label="prepareTargetBlockSlot()\nstate_transition()"]
-  RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()"]
+  RewinderWorkerPool:bs1 -> HotDB [dir="both", label="getReplayStateTrail()\ngetIntermediateBeaconStatesForCaching()"]
 
   Quarantine -> Rewinder [dir="both", label="isValidBeaconBlockEx()\nisValidAttestationEx()"]
   Clearance -> Rewinder [dir="both", label="produceBlock()"]

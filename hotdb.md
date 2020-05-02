@@ -52,7 +52,7 @@ They require from the HotDB a cached state and a sequence of blocks to apply to 
 > - There are multiple RewinderWorker and we don't want to block them for too long.
 > - The CPU load of state_transition becomes easily parallelized.
 
-## Ownership & Serialization
+## Ownership & Serialization & Resilience
 
 The HotDB is owned by the Blocksmith which initializes it and can kill it as well.
 Initialization can be done from a serialized HotDB.

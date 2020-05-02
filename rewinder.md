@@ -36,7 +36,7 @@ As an optimization, the state_transition can be done with skipBLS and skipVerify
 
 The HotDB can query the Rewinder service to compute the BeaconState for a certain (Block, Slot) pair to accelerate future `getReplayStateTrail()` calls via caching.
 
-## Ownership & Serialization
+## Ownership & Serialization & Resilience
 
 The Rewinder service is owned by the Blocksmith which initializes it and can kill it as well.
 
@@ -50,7 +50,7 @@ The number of worker threads will depend on the available cores and memory const
 
 ```Nim
 type
-  ValidBlock = distinct SignedBeaconBlock
+  ClearedBlock = distinct SignedBeaconBlock
   QuarantinedBlock = distinct SignedBeaconBlock
   JustifiedSlot = Slot
 
@@ -94,7 +94,7 @@ type
   RewinderWorker = ptr object
     inTasks: Channel[RewinderTask]
     state: BeaconState
-    blocks: seq[ValidBlock]
+    blocks: seq[ClearedBlock]
     hotDB: HotDB
     ## The channel sent to the HotDB to answer `getReplayStateTrail` queries
     stateTrailChan: Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]]
