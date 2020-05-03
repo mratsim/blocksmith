@@ -77,6 +77,18 @@ They respectively:
 - create a wrapper function that can receive an properly unpack such Tasks
 - pack a function call + arguments so that it can be send through a channel.
 
+## Bridging the IO-bound and CPU-bound worlds
+
+The IO-bound world is served by [Chronos](https://github.com/status-im/nim-chronos).
+The CPU-bound world is served by our custom services (from Blocksmith, Quarantine, Clearance, Rewinder, ...).
+
+Some networking queries do not require blocking the networking thread (and Chronos), for example receiving a new block can be done by just enqueuing it in the Quarantine service.
+Some networking queries needs to wait for expensive computation, for example a `getBeaconState` RPC call.
+To await that computation while leaving the network thread able to handle other events we use Chronos' AsyncChannels ([PR #45](https://github.com/status-im/nim-chronos/pull/45)):
+  - The network/Chronos thread delegates the CPU intensive task to the relevant service (each service is running on a different thread).
+  - The task includes an AsyncChannel to send the result to.
+  - The network thread then receives the result from the AsyncChannel (which involves async-aware blocking)
+
 ## Load profile
 
 All services are running on a separate thread, making the architecture both asynchronous and multithreaded.
