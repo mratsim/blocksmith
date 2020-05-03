@@ -22,7 +22,7 @@ The `Quarantine` module is "filter" implemented as a state machine that:
 
 ```Nim
 type
-  ValidBlock = distinct SignedBeaconBlock
+  ClearedBlock = distinct SignedBeaconBlock
   QuarantinedBlock = distinct SignedBeaconBlock
 
   UpdateFlag* = enum
@@ -41,6 +41,9 @@ type
   UpdateFlags* = set[UpdateFlag]
 
 type
+  BlockClearedRespChannel = tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], available: bool]
+  AttClearedRespChannel = tuple[att: QuarantinedAttestation, chan: ptr Channel[bool], available: bool]
+
   Quarantine* = ptr object
     ## Quarantine service
     inNetworkBlocks: ptr Channel[QuarantinedBlock]             # In from network and when calling "resolve" on the quarantineDB
@@ -54,8 +57,8 @@ type
     shutdown: Atomic[bool]
 
     # Internal result channels
-    areBlocksCleared: seq[tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], free: bool]]
-    areAttestationsCleared: seq[tuple[att: QuarantinedAttestation, chan: ptr Channel[bool], free: bool]]
+    areBlocksCleared: seq[BlockClearedRespChannel]
+    areAttestationsCleared: seq[AttClearedRespChannel]
 
     logFile: string
     logLevel: LogLevel
@@ -80,36 +83,57 @@ proc init(quarantine: Quarantine, rewinder: Rewinder, slashingDetector: Slashing
 
 
 proc teardown(quarantine: Quarantine) =
-  doAssert quarantine.shutdown
+  doAssert quarantine.shutdown.load(moRelaxed)
   quarantine.inNetworksBlocks.close()
-  quarantine.inNetworkAttestations.close
+  quarantine.inNetworkAttestations.close()
   quarantine.quarantineDB.shutdown.store(true, moRelease)
 
-  # Do we do the freeing here or leave that to the owner?
-  quarantine.freeShared()
+  for i in 0 ..< quarantine.areBlocksCleared.len:
+    quarantine.areBlocksCleared[i].chan.close()
+    quarantine.areBlocksCleared[i].chan.availableShared()
 
-proc init(isBlockCleared: var tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], free: bool]) =
-  isBlockCleared.free = true
+  for i in 0 ..< quarantine.areAttestationsCleared.len:
+    quarantine.areAttestationsCleared[i].chan.close()
+    quarantine.areAttestationsCleared[i].chan.availableShared()
+
+  # Do we do the availableing here or leave that to the owner?
+  quarantine.availableShared()
+
+proc init(isBlockCleared: var BlockClearedRespChannel) =
+  isBlockCleared.available = true
   isBlockCleared.chan = createSharedU(Channel[bool])
   isBlockCleared.chan.open(maxItems = 1)
 
 proc sendForValidation(
-       isBlockCleared: var tuple[blck: QuarantinedBlock, chan: ptr Channel[bool], free: bool],
+       isBlockCleared: var BlockClearedRespChannel,
        rewinder: Rewinder,
        qBlock: QuarantinedBlock
      ) {.inline.} =
-  isBlockCleared.free = false
+  isBlockCleared.available = false
   isBlockCleared.blck = qBlock
   rewinder.isValidBeaconBlockP2PExWorker(isBlockCleared.chan, rewinder, qBlock)
 
 proc sendForValidation(
-       isAttCleared: var tuple[att: QuarantinedAttestation, chan: ptr Channel[bool], free: bool],
+       isAttCleared: var AttClearedRespChannel,
        rewinder: Rewinder,
        qAtt: QuarantinedAttestation
      ) {.inline.} =
-  isAttCleared.free = false
+  isAttCleared.available = false
   isAttCleared.blck = qAtt
   rewinder.isValidAttestationP2PEx(isAttCleared.chan, rewinder, qAtt)
+
+proc findAvailableResponseChannel(respChannels: var seq[BlockClearedRespChannel] or seq[AttClearedRespChannel]): int =
+  ## Find an available channel, creating a new one if needed
+
+  let len = respChannels.len
+  for i in 0 ..< len:
+    if respChannels[i].available:
+      return i
+
+  # No available channel found
+  respChannels.setLen(len + 1)
+  respChannels[len].init()
+  return len
 
 # TODO: state machine
 
@@ -119,7 +143,6 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
   var backoff = 1 # Simple exponential backoff
   while not service.shutdown:
     var dataAvailable = true
-    var rIndex = 0
     var processedAtLeastAnEvent = false
 
     block: # 1. Drain the network blocks
@@ -128,18 +151,9 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
         (dataAvailable, qBlock) = service.inNetworkBlocks.tryRecv()
         if not dataAvailable:
           break
-        while true:
-          if service.areBlocksCleared[rIndex].free:
-            sendForValidation(service.areBlocksCleared[rIndex], service.rewinder, qBlock)
-            processedAtLeastAnEvent = true
-            break
-          if rIndex == service.areBlocksCleared.len:
-            service.areBlocksCleared.setLen(service.areBlocksCleared + 1)
-            service.areBlocksCleared[rIndex].init()
-            sendForValidation(service.areBlocksCleared[rIndex], service.rewinder, qBlock)
-            processedAtLeastAnEvent = true
-            break
-          inc rIndex
+        let chanIdx = findAvailableResponseChannel(service.areBlocksCleared)
+        sendForValidation(service.areBlocksCleared[chanIdx], service.rewinder, qBlock)
+        processedAtLeastAnEvent = true
 
     rIndex = 0
     block: # 2. Drain the network attestations
@@ -148,25 +162,16 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
         (dataAvailable, qAtt) = service.inNetworkAttestations.tryRecv()
         if not dataAvailable:
           break
-        while true:
-          if service.areAttestationsCleared[rIndex].free:
-            sendForValidation(service.areAttestationsCleared[rIndex], service.rewinder, qAtt)
-            processedAtLeastAnEvent = true
-            break
-          if rIndex == service.areAttestationsCleared.len:
-            service.areAttestationsCleared.setLen(service.areAttestationsCleared + 1)
-            service.areAttestationsCleared[rIndex].init()
-            sendForValidation(service.areAttestationsCleared[rIndex], service.rewinder, qAtt)
-            processedAtLeastAnEvent = true
-            break
-          inc rIndex
+        let chanIdx = findAvailableResponseChannel(service.areAttestationsCleared)
+        sendForValidation(service.areAttestationsCleared[chanIdx], service.rewinder, qBlock)
+        processedAtLeastAnEvent = true
 
     block: # 3. Slashable offences
       # TODO
 
     block: # 4. Collect cleared blocks
       for i in 0 ..< service.areBlocksCleared.len:
-        if service.areBlocksCleared[i].free = true:
+        if service.areBlocksCleared[i].available = true:
           continue
         let (dataAvailable, validBlock) = service.areBlocksCleared[i].chan.tryRecv()
         if dataAvailable:
@@ -181,11 +186,11 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
               blck = $shortLog(service.areBlocksCleared[i].blck)
             # TODO: message to PeerPool
           processedAtLeastAnEvent = true
-          service.areBlocksCleared[i].free = true
+          service.areBlocksCleared[i].available = true
 
     block: # 5. Collect cleared attestations
       for i in 0 ..< service.areAttestationsCleared.len:
-        if service.areAttestationsCleared[i].free = true:
+        if service.areAttestationsCleared[i].available = true:
           continue
         let (dataAvailable, validAttestation) = service.areAttestationsCleared[i].chan.tryRecv()
         if dataAvailable:
@@ -200,7 +205,7 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
               blck = $shortLog(service.areAttestationsCleared[i].att)
             # TODO: message to PeerPool
           processedAtLeastAnEvent = true
-          service.areAttestationsCleared[i].free = true
+          service.areAttestationsCleared[i].available = true
 
     if not processedAtLeastAnEvent:
       # No event processed, backoff
