@@ -72,7 +72,7 @@ digraph architecture{
   KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
   Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
   Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
-  Clearance -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
+  Rewinder:bs1 -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
 
   Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync Out"]
 

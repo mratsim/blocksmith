@@ -69,10 +69,10 @@ type
   UpdateFlags* = set[UpdateFlag]
 
 const RewinderEnvSize = max(
-  # produceBlock
-  ResultChannelSize + sizeof(RewinderSupervisor) + sizeof(SignedBeaconBlock) +
-    sizeof(slot) + sizeof(Eth2Digest) + sizeof(ValidatorSig) + sizeof(Eth1Data) +
-    sizeof(Eth2Digest) + sizeof(seq[Attestation]) + sizeof(seq[Deposits]),
+  # proposeBlock
+  sizeof(Rewinder) + sizeof(KeySigning) +
+    sizeof(MainChainMonitor) + sizeof(Eth2Node) +
+    sizeof(Slot),
   0 # other cross-service calls
 )
 
@@ -103,9 +103,27 @@ type
     state: BeaconState
     blocks: seq[ClearedBlock]
     hotDB: HotDB
+    attDB: AttestationDB
     forkChoice: ForkChoice
-    ## The channel sent to the HotDB to answer `getReplayStateTrail` queries
+
+
+    # The channel sent to the HotDB to answer `getReplayStateTrail` queries
     stateTrailChan: ptr Channel[StateTrail]
+    # The channel sent to the HotDB for head block + state queries
+    currentHeadChan: ptr Channel[tuple[blockDAGnode: BlockDAGnode, state: BeaconState]
+    # The channel sent to the MainchainMonitor for Eth1Data + Deposits queries
+    eth1MonitorChan: ptr Channel[tuple[eth1data: Eth1Data, deposits: seq[Deposit]]
+    # The channel sent to the KeySigning service
+    # Used for both block signature and RandaoReveal
+    signingChan: ptr Channel[ValidatorSig]
+    # The channel sent to the KeySigning service
+    # used to check
+    # - if the passed validator is attached to the beacon node
+    # - if we are already signed for this slot
+    boolChan: ptr Channel[bool]
+    # The channel sent to the AttestationDB
+    attChan: ptr Channel[seq[Attestation]]
+
     shutdown: bool
     logFile: string
     logLevel: LogLevel
@@ -339,100 +357,328 @@ Note: there are several expensive isValidAttestation.
 
 TODO: implementation is similar to `isValidBeaconBlockP2PExWorker`/`proc isValidBeaconBlockP2PEx`
 
-### produceBlock()
+### proposeBlockWhenValidatorDuty()
 
-`produceBlock()` is a thin wrapper around `makeBeaconBlock()` from state_transition_block to produce a yet-to-be-signed BeaconBlock.
+`proposeBlockWhenValidatorDuty()` handles block proposal for the BeaconValidator service
+It accepts a target slot and then handles:
+- Querying the HotDB for the current head block
+- Ensuring that the slot we propose for is greated than the head block slot (or we are too late)
+- Getting the RewinderWorker to the proper state
+- Checking if one of the attached validator has a block proposal duty
+  and which
+- Retrieving Eth1Data
+- Produce the BeaconBlock
+- Send the unsigned block to the KeySigning process
+- Retrieve the newly signed block and its slashing protection status
+- Add it to the HotDB
+- Add it to the fork choice
+- SSZ Dump it
+
+This is completely non-blocking compared to the current NBC implementation.
+It also avoids rewinding in both `handleProposal` (via `getProposer`) and `proposeBlock`.
+
+#### Current limitations
+
+MainchainMonitor and Eth2Node are ref object and should be changed to ptr object services.
+
+
+```Nim
+# https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/validator.md#get_eth1_data
+func getBlockProposalData*(eth1Chain: Eth1Chain,
+                           state: BeaconState): (Eth1Data, seq[Deposit]) =
+```
+mainchain_monitor.getBlockProposalData() uses a whole BeaconState for:
+- `let prevBlock = eth1Chain.findBlock(state.eth1_data)`
+  Eth1Data is a much simpler object to pass around
+  ```Nim
+  # https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/beacon-chain.md#eth1data
+  Eth1Data* = object
+    deposit_root*: Eth2Digest
+    deposit_count*: uint64
+    block_hash*: Eth2Digest
+  ```
+- `voting_period_start_time(state)` which only does
+  ```Nim
+  # https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/validator.md#get_eth1_data
+  func compute_time_at_slot(state: BeaconState, slot: Slot): uint64 =
+    return state.genesis_time + slot * SECONDS_PER_SLOT
+
+  # https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/validator.md#get_eth1_data
+  func voting_period_start_time*(state: BeaconState): uint64 =
+    let eth1_voting_period_start_slot = state.slot - state.slot mod SLOTS_PER_ETH1_VOTING_PERIOD.uint64
+    return compute_time_at_slot(state, eth1_voting_period_start_slot)
+  ```
+- `state.eth1_data_votes`
+  ```Nim
+  eth1_data_votes*: List[Eth1Data, EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH]
+  ```
+
+#### Implementation
 
 ```nim
-proc produceBlockWorker(
-      resultChan: ptr Channel[Option[BeaconBlock]],
-      wrk: RewinderWorker,
-      head: SignedBeaconBlock, slot: Slot,
-      parent_root: Eth2Digest,
-      randao_reveal: ValidatorSig;
-      eth1_data: Eth1Data,
-      graffiti: Eth2Digest,
-      attestations: seq[Attestation],
-      deposits: seq[Deposit]
-    ) =
-  ## Create a new block at target slot starting from the target head block
-  ## The new block is NOT signed.
+proc getValidatorOnDuty(rewinder: RewinderWorker, keySigning: KeySigning, state: BeaconState): Option[ValidatorPubKey] =
+  ## Get the public key of a validator on block proposal duty
+  ## if any
+  var cache = get_empty_per_epoch_cache()
 
-  let resultChan = wrk.stateTrailChan.addr
-  hotDB.call(getReplayStateTrail(resultChan, hotDB, head.root, slot - 1))
+  # https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/validator.md#validator-assignments
+  let proposerIdx = get_beacon_proposer_index(state[], cache)
+  if proposerIdx.isNone:
+    warn "Missing proposer index",
+      slot=slot,
+      epoch=slot.compute_epoch_at_slot,
+      num_validators=state.validators.len,
+      active_validators=
+        get_active_validator_indices(state[], slot.compute_epoch_at_slot),
+      balances=state.balances
+    return
 
-  # Block until we get the stateTrail
-  # TODO: we can optimize the copy to not reallocate
-  (wrk.state, wrk.blocks) = resultChan.recv()
+  let validatorOnDuty = state.validators[proposerIdx.get()].pubkey
 
-  # Move the local worker state to the desired state
-  wrk.state.apply(wrk.blocks) # `apply` is an internal procs that applies each `ValidBeaconBlock`
+  # Check if one of ours. The "KeySigning" service also takes over the ValidatorPool role.
+  doAssert rewinder.boolChan.ready
+  keySigning.isAttachedValidator(rewinder.boolChan, validatorOnDuty)
 
-  # Send the result
-  resultChan.send makeBeaconBlock(wrk.state, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
+  if rewinder.boolChan.recv():
+    return some(validatorOnDuty)
+  else:
+    debug "Waiting for external block proposal",
+      headRoot = shortLog(head.blockDAGnode.blockroot),
+      slot = shortLog(slot),
+      validatorOnDuty = shortLog(validatorOnDuty),
+      cat = "consensus",
+      pcs = "wait_for_proposal"
+    return none(ValidatorPubKey)
+
+proc proposeBlockWhenValidatorDutyWorker(
+       # No result channel, all block production duties are completely delegated
+       rewinder: RewinderWorker,
+       keySigning: KeySigning,
+       mainChainMonitor: MainChainMonitor,
+       network: Eth2Node
+       slot: Slot
+  ) =
+  ## Produce, sign and broadcast a block on behalf of `validator` for a target `slot`
+  ## This handles:
+  ## - Querying the HotDB for the current head block
+  ## - Ensuring that the slot we propose for is greated than the
+  ##   head block slot (or we are too late)
+  ## - Getting the RewinderWorker to the proper state
+  ## - Checking if one of the attached validator has a block proposal duty
+  ##   and which
+  ## - Retrieving Eth1Data
+  ## - Produce the BeaconBlock
+  ## - Send the unsigned block to the KeySigning process
+  ## - Retrieve the newly signed block and
+  ##   its slashing protectionstatus
+  ## - Add it to the HotDB
+  ## - Add it to the fork choice
+  ## - SSZ Dump it
+  ##
+  ## Failure mode is do-nothing if:
+  ## - The slot is not in the future
+  ## - We have no validator on duty
+  ## - BeaconBlock generation failed
+
+  # TODO keySigning, MainChainMonitor, network should be threadsafe services / ptr object
+
+  # 1. Get the current head block and state
+  doAssert rewinder.currentHeadChan.ready
+  rewinder.hotDB.queryCurrentHeadBlock(rewinder.currentHeadChan)
+  var head = rewinder.currentHeadChan.recv()
+
+  if head.blockDAGnode.slot >= slot:
+    # TODO threadsafe Chronicles // use the threadlocal config (in case of per-service filepath)
+    warn "Skipping proposal, have newer head already",
+      headSlot = shortLog(head.blockDAGnode.slot),
+      headBlockRoot = shortLog(head.blockDAGnode.blockroot),
+      slot = shortLog(slot),
+      cat = "fastforward"
+    return
+
+  # 2. Advance the head state to the target slot
+  process_slots(head.state, slot)
+  template new_state: untyped {.dirty.} = head.state
+
+  # 3. Do we have a validator on proposal duty
+  let validatorOnDuty = rewinder.getValidatorOnDuty(keySigning, new_state, slot)
+  if validatorOnDuty.isNone():
+    return # Already logged
+  template validator(): untyped {.dirty.} = validatorOnDuty.unsafeGet()
+
+  # 4. Get Eth1 Deposits data
+  let (eth1data, deposits) =
+  if mainChainMonitor.isNil:
+    (get_eth1data_stub(state.eth1_deposit_index, slot.compute_epoch_at_slot()),
+      newSeq[Deposit]())
+  else:
+    doAssert rewinder.eth1MonitorChan.ready
+    mainChainMonitor.getBlockProposalData(
+      rewinder.eth1MonitorChan,
+      new_state.eth1_data,
+      new_state.genesis_time,
+      new_state.slot
+    )
+    rewinder.eth1MonitorChan.recv()
+
+  # 5. Generate the RANDAO reveal
+  doAssert rewinder.signingChan.ready
+  keySigning.genRandaoReveal(rewinder.signingChan, validator, new_state.fork, new_state.genesis_validators_root, slot)
+
+  # 6. Generate the Beacon Block
+  let message = makeBeaconBlock(
+    new_state,
+    head.blockDAGnode.blockroot,
+    rewinder.signingChan.recv(), # Randao
+    eth1data,
+    default(Eth2Digest),
+    getAttestationsForBlock(rewinder, state), # private proc that will connect to the AttestationDB
+    deposits
+  )
+
+  if not message.isSome():
+    return # Error already logged
+
+  # 7. Generate the Signed Beacon Block
+  var newBlock = SignedBeaconBlock(
+    message: message.get()
+  )
+  let blockRoot = hash_tree_root(newBlock.mesage)
+
+  doAssert rewinder.signingChan.ready
+  doAssert rewinder.boolChan.ready
+  keySigning.signBlockProposal(
+    rewinder.signingChan,
+    # Slashing protection, the KeySigning service can pass it along to the Slashing Protection service
+    # to overlap both signing and Slashing Protection as we expect double-signing to be rare.
+    rewinder.boolChan,
+    validator,
+    state.fork, state.genesis_validators_root, slot, blockRoot
+  )
+  if rewinder.boolChan.recv():
+    warn "Slashing protection: already signed a block for this slot",
+      validatorOnDuty = shortlog(validator),
+      blockRoot = shortlog(blockRoot),
+      slot = slot
+
+    # Metrics
+    slashing_protection.inc()
+    return
+  newBlock.signature = rewinder.signingChan.recv()
+
+  # Note: contrary to the "async" original implementation
+  # `new_state` is still valid here
+
+  # 8. Non-blocking notify the HotDB
+  rewinder.hotDB.addClearedBlockAndState(
+    ClearedBlock(newBlock),
+    new_state
+  )
+
+  # 9. Non-blocking notify the fork choice
+  # Should the HotDB handle the notification instead?
+  # Apparently there were bug cases where the new block couldn't be added to the HotDB.
+  rewinder.forkChoice.process_block(
+    new_state.slot, # Metadata unnecessary for fork choice but supposedly help external components (in Lighthouse)
+    blockRoot,
+    nblock.parent_root,
+    nblock.state_root, # Metadata unnecessary for fork choice but supposedly help external components (in Lighthouse)
+    new_state.current_justified_checkpoint.epoch,
+    new_state.finalized_checkpoint.epoch
+  )
+
+  info "Block proposed",
+    blck = shortLog(newBlock.message),
+    blockRoot = shortLog(blockRoot),
+    validator = shortLog(validator),
+    cat = "consensus"
+
+  # TODO: SSZ dump
+
+  # A wrapper to ask the networking service to broadcast blocks on the proper topic.
+  network.broadcastBeaconBlock(newBlock)
+
+  # Metrics
+  beacon_blocks_proposed.inc()
 ```
 
 At the supervisor level we have the following indirection to dispatch to the proper worker
 
 ```Nim
-type ProduceBlockTask = ptr object
+type ProposeBlockWhenValidatorDutyTask = ptr object
   fn: proc(env: pointer) {.nimcall.}
   env: tuple[
-    resultChan: ptr Channel[Option[BeaconBlock]],
-    wrk: Rewinder,
-    head: SignedBeaconBlock, slot: Slot,
-    parent_root: Eth2Digest,
-    randao_reveal: ValidatorSig;
-    eth1_data: Eth1Data,
-    graffiti: Eth2Digest,
-    attestations: seq[Attestation],
-    deposits: seq[Deposit]
+    # No result channel, all block production duties are completely delegated
+    rewinder: Rewinder,
+    keySigning: KeySigning,
+    mainChainMonitor: MainChainMonitor,
+    network: Eth2Node,
+    slot: Slot
   ]
 
-proc dispatchProduceBlockTaskToWorker(task: ptr RewinderTask, worker: RewinderWorker) =
+proc dispatchProposeBlockWhenValidatorDutyTaskToWorker(task: ptr RewinderTask, worker: RewinderWorker) =
   # Edit the task argument.
   # Change the proc called and the worker
   # from
-  # - The public `produceBlock()` to `produceBlockWorker()`
+  # - The public `proposeBlock()` to `proposeBlockWorker()`
   # - A pointer `Rewinder` to the target `RewinderWorker`
   # and then sends the task to the worker channel.
-  task.fn = cast[pointer](produceBlockWorker)
+  task.fn = cast[pointer](proposeBlockWorker)
   task.env.wrk = cast[Rewinder](worker)
   worker.inTasks.send(task[])
 
-proc produceBlock(supervisor: Rewinder, task: ptr RewinderTask) =
-  ## Create a new block at target slot starting from the target head block
-  ## The new block is NOT signed.
-  # This dispatches the actual produceBlock task to a free rewinderWorker.
+proc svc_proposeBlockWhenValidatorDuty(supervisor: Rewinder, task: ptr RewinderTask) =
+  # This dispatches the actual proposeBlock task to a free rewinderWorker.
 
-  let task = cast[ProduceBlockTask](task)
+  let task = cast[ProposeBlockTask](task)
 
   # 1. Check if there is a ready worker
   for i in 0 ..< workerPool.len:
     if workerPool[i].ready.load(moAcquire):
-      task.dispatchProduceBlockTaskToWorker(supervisor.workerPool[i])
+      task.dispatchPproposeBlockWhenValidatorDutyTaskToWorker(supervisor.workerPool[i])
       return
 
   # 2. If we don't find any, pick a worker at random
   let workerID = supervisor.rng.rand(workerPool.len-1)
-  task.dispatchProduceBlockTaskToWorker(supervisor.workerPool[workerID])
+  task.dispatchProposeBlockWhenValidatorDutyTaskToWorker(supervisor.workerPool[workerID])
 
 # We expose a public template that allows the compiler/nimsuggest to check the argument types and handle task serialization
-template produceBlock*(
+template proposeBlockWhenValidatorDuty*(
       service: Rewinder,
-      resultChan: ptr Channel[Option[BeaconBlock]],
-      wrk: Rewinder,
-      head: SignedBeaconBlock, slot: Slot,
-      parent_root: Eth2Digest,
-      randao_reveal: ValidatorSig;
-      eth1_data: Eth1Data,
-      graffiti: Eth2Digest,
-      attestations: seq[Attestation],
-      deposits: seq[Deposit]
+      rewinder: Rewinder,
+      keySigning: KeySigning,
+      mainChainMonitor: MainChainMonitor,
+      network: Eth2Node,
+      slot: Slot
     ): untyped =
-  ## Create a new block at target slot starting from the target head block
-  ## The new block is NOT signed.
-  service.call produceBlock(resultChan, wrk, head, wrk, head, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
+  ## Produce, sign and broadcast a block for a target `slot`
+  ## if it is the duty of one of our attached validator
+  ##
+  ## This handles:
+  ## - Querying the HotDB for the current head block
+  ## - Ensuring that the slot we propose for is greated than the
+  ##   head block slot (or we are too late)
+  ## - Getting the RewinderWorker to the proper state
+  ## - Check if one of our attached validators is scheduled for proposal
+  ## - Retrieving Eth1Data
+  ## - Produce the BeaconBlock
+  ## - Send the unsigned block to the KeySigning process
+  ## - Retrieve the newly signed block and
+  ##   its slashing protectionstatus
+  ## - Add it to the HotDB
+  ## - Add it to the fork choice
+  ## - SSZ Dump it
+  ##
+  ## Failure mode is do-nothing if:
+  ## - The slot is not in the future
+  ## - We have no validator that should propose a block for this slot
+  ## - BeaconBlock generation failed
+  bind RewinderEnvSize
+  let task = crossServiceCall(
+    svc_proposeBlock, RewinderEnvSize,
+    proposeBlock(rewinder, keySigning, mainChainMonitor, network, validator, slot)
+  )
+  service.inTasks.send task
 ```
 
 ### rpcQueryStateAtSlot()

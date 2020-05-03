@@ -1,12 +1,12 @@
-# RPC service
+# BeaconRPC
 
 ## Role
 
-The RPC service answers RPC queries from the network
+The BeaconRPC answers RPC queries from the network
 
 ## Remarks
 
-The RPC service is bridging the networking layer with the beacon node logic.
+The BeaconRPC is bridging the networking layer with the beacon node logic.
 The networking thread should not be blocked by the potentially expensive computation
 that may be caused by some queries, especially those that might involve state rewinding or recomputation of state_transition.
 
