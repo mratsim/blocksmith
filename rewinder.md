@@ -4,12 +4,14 @@
 
 The rewinder service answers requests that require state data.
 
-It interacts with 2 services:
+It interacts with the following services:
 - the "Clearance" service
   - to provide the head block of the canonical chain.
 - the "Quarantine" service
   - to validate a block
   - to validate an attestation
+- the "BeaconRPC" service
+  - to answer RPC queries that require state handling
 
 It is the only module that apply `state_transition()`. Furthermore the only other module that deal with `BeaconState` is the HotDB but only with raw copyMem. This is an important properties with the following benefits:
 - BeaconState is costly both in term of memory and CPU. We can focus the target of our optimizations.
@@ -433,9 +435,6 @@ template produceBlock*(
   service.call produceBlock(resultChan, wrk, head, wrk, head, parent_root, randao_reveal, eth1_data, graffiti, attestations, deposits)
 ```
 
+### rpcQueryStateAtSlot()
 
-## Verification
-
-Techniques for CSP (Communicating Sequential Process) or PetriNets can be used to formally verify the behaviours of the HotDB as the communication is only done by message-passing.
-
-For resilience, techniques derived from the Actor Model (for example a supervisor that can kill/restart the HotDB service in case it gets in an inconsistent state) can be used.
+### rpcQueryStateForBlock()

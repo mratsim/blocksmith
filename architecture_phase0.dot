@@ -7,7 +7,7 @@ digraph architecture{
   {rank = source; ETH1_DepositContract LibP2P ETH2_API CLI Time ValidatorUI;}
 
   node [shape = record] BeaconNode;
-  BeaconNode [label="{<nbc> Beacon Node \n Validator Client} | <PeerPool>PeerPool"]
+  BeaconNode [label="<rpc> BeaconRPC | <nbc> Beacon Node \n Validator Client | <PeerPool>PeerPool"]
 
   ncli [label="ncli/nbench"];
   {rank = same; ncli; nfuzz;}
@@ -60,7 +60,9 @@ digraph architecture{
 
   LibP2P -> BeaconNode:PeerPool [label="Recv unsafe blocks\nRecv unsafe attestations"]
   BeaconNode:PeerPool -> LibP2P [label="Blocks proposed\nAggregate attestations"]
-  ETH2_API -> BeaconNode:nbc [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
+  ETH2_API -> BeaconNode:rpc [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
+
+  BeaconNode:rpc -> Rewinder [dir="both", label="rpcQueryStateForBlock()\nrpcQueryStateAtSlot()"]
 
   Clearance -> ForkChoice [dir="both", label="find_head()\nmaybe_prune()"]
   Rewinder:bsN -> ForkChoice [label="process_attestation()\nprocess_block()"]

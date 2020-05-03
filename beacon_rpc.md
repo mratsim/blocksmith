@@ -147,7 +147,7 @@ proc queryStateAtSlot(
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel
   # Note: the extra rewinder argument is rewritten by the Rewinder dispatcher to a worker address for multithreading
-  rewinder.queryStateAtSlot(stateRespChannel.chan, rewinder, slot)
+  rewinder.rpcQueryStateAtSlot(stateRespChannel.chan, rewinder, slot)
 
 proc queryStateForBlock(
        rewinder: Rewinder,
@@ -159,7 +159,7 @@ proc queryStateForBlock(
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel
   # Note: the extra rewinder argument is rewritten by the Rewinder dispatcher to a worker address for multithreading
-  rewinder.queryStateForBlock(stateRespChannel.chan, rewinder, blck)
+  rewinder.rpcQueryStateForBlock(stateRespChannel.chan, rewinder, blck)
 
 proc findAvailableResponseChannel(stateRespChannels: var stateRespChannels): int =
   ## Find an available channel, creating a new one if needed
