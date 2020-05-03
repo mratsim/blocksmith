@@ -214,3 +214,22 @@ proc eventLoop(service: Quarantine, rewinder: Rewinder, slashingDetector: Slashi
   # Shutdown - free all memory
   service.teardown()
 ```
+
+## Backoff strategies
+
+As the Quarantine module is listening to multiple sources, it cannot block on a single channel. To avoid burning CPU we need a backoff strategies if there is no incoming messages.
+
+In the current API, the proposed solution is a simple exponential backoff.
+- Alternatively, log-log-iterated backoff has been shown to provide much better latency.
+  Distributed backoff strategies has been heavily studied for embedded WiFi devices to save energy.
+  See research at:
+  - https://github.com/mratsim/weave/blob/943d04ae/weave/cross_thread_com/event_notifiers_and_backoff.md
+- When both the producer (that want to send wakeup notification) and the consumer are on a shared memory system, the following EventNotifier can be used:
+  - https://github.com/mratsim/weave/blob/943d04ae/weave/cross_thread_com/event_notifiers.nim
+
+  Note: it has been formally verified to be deadlock-free:
+  - https://github.com/mratsim/weave/blob/943d04ae/formal_verification/event_notifiers.tla
+
+  but it highlighted a deadlock bug in Glibc condition variables on Linux that can skip a wakeup message.
+  Hence it uses Linux Futexes directly instead
+  - https://github.com/mratsim/weave/blob/943d04ae/weave/primitives/futex_linux.nim
