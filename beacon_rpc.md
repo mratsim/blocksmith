@@ -142,6 +142,7 @@ proc queryStateAtSlot(
        stateRespChannel: var StateResponseChannel,
        slot: Slot
      ) {.inline.} =
+  assert stateRespChannel.available
   stateRespChannel.available = false
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel
@@ -153,6 +154,7 @@ proc queryStateForBlock(
        stateRespChannel: var StateResponseChannel,
        blck: QuarantinedBlockRoot
      ) {.inline.} =
+  assert stateRespChannel.available
   stateRespChannel.available = false
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel

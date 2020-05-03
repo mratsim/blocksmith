@@ -109,6 +109,7 @@ proc sendForValidation(
        rewinder: Rewinder,
        qBlock: QuarantinedBlock
      ) {.inline.} =
+  assert isBlockCleared.available
   isBlockCleared.available = false
   isBlockCleared.blck = qBlock
   rewinder.isValidBeaconBlockP2PExWorker(isBlockCleared.chan, rewinder, qBlock)
@@ -118,6 +119,7 @@ proc sendForValidation(
        rewinder: Rewinder,
        qAtt: QuarantinedAttestation
      ) {.inline.} =
+  assert isAttCleared.available
   isAttCleared.available = false
   isAttCleared.blck = qAtt
   rewinder.isValidAttestationP2PEx(isAttCleared.chan, rewinder, qAtt)
