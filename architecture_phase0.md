@@ -39,7 +39,7 @@ Modules are organized into services that communicate via message-passing.
 
 Services are either on a dedicated thread or a dedicated process if process isolation is desired (Key Signing service)
 
-Services are implemented via an eventLoop that wait until the channel for incoming task has a task.
+Services are implemented via an eventLoop that wait until the channel for incoming tasks has a task.
 
 This architecture has the following advantages:
 - Services state is easier to handle:
@@ -76,3 +76,57 @@ They respectively:
 - define a Task i.e. a function call + context (environement/closure)
 - create a wrapper function that can receive an properly unpack such Tasks
 - pack a function call + arguments so that it can be send through a channel.
+
+## Load profile
+
+All services are running on a separate thread, making the architecture both asynchronous and multithreaded.
+
+On a idle system, for example connected to 1 peer, and receiving very few attestations, blocks and sync requests,
+all services are idle and do not take CPU-time.
+
+Hence dropping peers is an effective way to handle high load.
+
+### Handling high load
+
+Validators have a time-critical duty to attest on the new blockchain heads and regularly propose a block to be the new head of the blockchain.
+Missing this time window will lead to slashing and so loss of part of the deposit.
+
+Ignoring RPC, the load of a client grows with:
+- The number of messages received
+- which depends on the number of peers
+- and the number of attestations sent over the network and transmitted by the peers
+
+#### Async fork choice
+
+> default
+
+The first mechanism to ensure that we don't miss attestation window is decoupling the fork choice from
+processing clearing network quarantined blocks.
+
+When requested for a new head, the fork choice will provide a valid head given the state of the cleared blocks.
+
+#### Multithreaded Rewinder service
+
+> default
+> Possible extension: high priority ValidatorDuties RewinderWorker
+
+The Rewinder service is possible the most CPU-intensive service as it handles state_transition and BLS verification.
+As such it is multithreaded which should help distribute the load on available CPUs.
+
+Furthermore, a dedicated RewinderWorker for high priority Validator Duties tasks can be created, possibly with OS-level thread priority to ensure that all resources are directed to not getting slashed, even on a busy system.
+
+#### Backpressure
+
+The use of message-passing between services enables backpressure.
+In an architecture based on function calls and/or shared memory communication (via a mutable state),
+there is no easy way inside the application to detect that it is too loaded.
+
+The current Backpressure detection is based on time-drift
+- https://github.com/status-im/nim-beacon-chain/blob/c3cdb399/beacon_chain/beacon_node.nim#L310-L334
+- https://github.com/status-im/nim-beacon-chain/blob/c3cdb399/beacon_chain/beacon_node.nim#L684-L726
+where load is detected if the expected slot differs from the current head slot.
+
+Instead with message-passing, a producer can proactively monitor the number of enqueued messages in a worker queue. If it grows, it can notify the peer pool to drop peers, and log a warning.
+This also helps identify bottlenecks in the application as a whole instead of individual component (BLS signatures, state_transition, shuffling, ...).
+
+Note on monitoring: it can be lightweight and avoid locking. For lock-free queues, the number of items enqueued is overestimated by the producer and underestimated by the consumer.

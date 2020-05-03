@@ -1,9 +1,9 @@
 digraph architecture{
-  node [shape = signature]; KeySigning [label="KeySigning (isolated process)"];
+  node [shape = signature]; KeySigning [color="forestgreen", label="KeySigning (isolated process)"];
   node [shape = octagon]; SyncManager SyncProtocol MainChain_Monitor Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz ForkChoice;
   ETH2_API [label="ETH2.0-API (REST)"];
-  Slashing [label="Slashing Detection & Protection"];
-  ForkChoice [label="Fork Choice - Proof-Of-Stake\n(ProtoArray)"];
+  Slashing [color="crimson", label="Slashing Detection & Protection"];
+  ForkChoice [color="coral", label="Fork Choice - Proof-Of-Stake\n(ProtoArray)"];
   {rank = source; ETH1_DepositContract LibP2P ETH2_API CLI Time ValidatorUI;}
 
   node [shape = record] BeaconNode;
@@ -17,6 +17,15 @@ digraph architecture{
   node [shape = note] SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256
   {rank = same; Blocksmith Phase_1 Phase_2 SSZ HashTreeRoot BLS_Signature Chronicles Metrics SHA256;}
 
+  Blocksmith [color="coral"]
+  Clearance [color="coral"]
+  SignedBlockDB [color="crimson"]
+  Quarantine [color="crimson"]
+  AttestationDB [color="forestgreen"]
+  QuarantinedDB [color="forestgreen"]
+  ColdDB [color="coral"]
+  HotDB [color="crimson"]
+
   BeaconNode:nbc -> Phase_1
   BeaconNode:nbc -> Phase_2
   Phase_2 -> Eth1_EE
@@ -28,7 +37,7 @@ digraph architecture{
   node [shape = box]; BeaconState_X;
   BeaconState_X [label="Consensus Engine X\n(BeaconState X)"]
 
-  Rewinder [label="{Rewinder service + Worker pool|{<bs0>Consensus Engine 0\n(BeaconState 0)|<bs1>Consensus Engine 1\n(BeaconState 1)|<bs2>Consensus Engine 2\n(BeaconState 2)|<bsN>Consensus Engine N\n(BeaconState N)}}"];
+  Rewinder [color="coral", label="{Rewinder service + Worker pool|{<bs0>Consensus Engine 0\n(BeaconState 0)|<bs1>Consensus Engine 1\n(BeaconState 1)|<bs2>Consensus Engine 2\n(BeaconState 2)|<bsN>Consensus Engine N\n(BeaconState N)}}"];
   {rank = same; Rewinder BeaconState_X;}
 
   node [shape = cylinder]; AttestationDB HotDB ColdDB;
@@ -50,7 +59,7 @@ digraph architecture{
   BeaconNode:nbc -> Quarantine
   Blocksmith -> Quarantine [dir=both color="black:black"]
   Blocksmith -> Clearance [dir=both color="black:black"]
-  Quarantine -> QuarantinedDB [dir=both label="resolve()"]
+  Quarantine -> QuarantinedDB [color="forestgreen", dir=both label="resolve()"]
 
   ncli -> BeaconState_X [label="state_transition()"]
   nfuzz -> BeaconState_X [label="state_transition()"]
@@ -62,23 +71,23 @@ digraph architecture{
   BeaconNode:PeerPool -> LibP2P [label="Blocks proposed\nAggregate attestations"]
   ETH2_API -> BeaconNode:nbc [dir="both", label="/beacon/head\n/beacon/block\n/beacon/state"]
 
-  Clearance -> ForkChoice [dir="both", label="find_head()\nmaybe_prune()"]
-  Rewinder:bsN -> ForkChoice [label="process_attestation()\nprocess_block()"]
+  Clearance -> ForkChoice [dir="both", color="forestgreen", label="find_head()\nmaybe_prune()"]
+  Rewinder:bsN -> ForkChoice [color="coral",label="process_attestation()\nprocess_block()"]
 
-  Quarantine -> Slashing [dir="both", label="isSlashable()"]
-  Rewinder:bs1 -> KeySigning [dir="both", label="signBlock()"]
-  KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
-  Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
-  Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
-  Clearance -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]
+  Quarantine -> Slashing [color="crimson", dir="both", label="isSlashable()"]
+  Rewinder:bs1 -> KeySigning [color="forestgreen", dir="both", label="signBlock()"]
+  KeySigning -> Slashing [color="forestgreen", dir="both", label="alreadyVoted()"]
+  Slashing -> AttestationDB [color="forestgreen", label="votingTrail\npruneFinalized()"]
+  Slashing -> SignedBlockDB [color="crimson", label="signedBlockTrail\npruneFinalized()"]
+  Clearance -> AttestationDB [color="forestgreen", dir="both", label="getAttestationsForBlockSlot()"]
 
-  Clearance -> HotDB [dir="both", label="pruneFinalized()\nSync Out"]
+  Clearance -> HotDB [color="coral", dir="both", label="pruneFinalized()\nSync Out"]
 
-  Rewinder:bs2 -> HotDB [dir="both", label="getReplayStateTrail()\naddClearedBlockAndState()\ngetIntermediateBeaconStatesForCaching()"]
+  Rewinder:bs2 -> HotDB [color="crimson", dir="both", label="getReplayStateTrail()\naddClearedBlockAndState()\ngetIntermediateBeaconStatesForCaching()"]
 
-  Quarantine -> Rewinder [dir="both", label="tryClearQuarantinedBlock()\ntryClearQuarantinedAttestation()"]
-  Clearance -> Rewinder [dir="both", label="produceBlock()"]
+  Quarantine -> Rewinder [color="coral", dir="both", label="tryClearQuarantinedBlock()\ntryClearQuarantinedAttestation()"]
+  Clearance -> Rewinder [color="coral", dir="both", label="produceBlock()"]
 
 
-  Clearance -> ColdDB [dir="both", label="pushFinalizedChain()\nSync Out"]
+  Clearance -> ColdDB [color="coral", dir="both", label="pushFinalizedChain()\nSync Out"]
 }
