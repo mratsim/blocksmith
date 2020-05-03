@@ -100,7 +100,7 @@ state recomputation and block the networking thread
 
 ```Nim
 type
-  StateResponseChannel = tuple[chan: ptr AsyncChannel[StringOfJson], free: bool]
+  StateResponseChannel = tuple[chan: ptr AsyncChannel[StringOfJson], available: bool]
 
   BeaconRPC* = ptr object
     ## RPC service
@@ -133,7 +133,7 @@ proc teardown(beaconRPC: BeaconRPC) =
     quarantine.stateRespChannels[i].chan.freeShared()
 
 proc init(stateRespChannel: var StateResponseChannel) =
-  stateRespChannel.free = true
+  stateRespChannel.available = true
   stateRespChannel.chan = createSharedU(AsyncChannel[Option[BeaconState]])
   stateRespChannel.chan.open(maxItems = 1)
 
@@ -142,7 +142,7 @@ proc queryStateAtSlot(
        stateRespChannel: var StateResponseChannel,
        slot: Slot
      ) {.inline.} =
-  stateRespChannel.free = false
+  stateRespChannel.available = false
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel
   # Note: the extra rewinder argument is rewritten by the Rewinder dispatcher to a worker address for multithreading
@@ -153,7 +153,7 @@ proc queryStateForBlock(
        stateRespChannel: var StateResponseChannel,
        blck: QuarantinedBlockRoot
      ) {.inline.} =
-  stateRespChannel.free = false
+  stateRespChannel.available = false
   # Function exposed by the rewinder service that abstract away state handling
   # And return the result asynchronously in an AsyncChannel
   # Note: the extra rewinder argument is rewritten by the Rewinder dispatcher to a worker address for multithreading
