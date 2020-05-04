@@ -288,6 +288,9 @@ proc signBlockProposal*(v: AttachedValidator, fork: Fork,
 
 ## Proposed API
 
+Most of the replacement API is delegated to the Rewinder service so that
+networking is not blocked, see [Rewinder - Validator Duties](rewinder.md#ValidatorDuties)
+
 ```Nim
 type
   ValidatorKeyManagementMode = enum

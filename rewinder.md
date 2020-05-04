@@ -434,7 +434,7 @@ mainchain_monitor.getBlockProposalData() uses a whole BeaconState for:
   eth1_data_votes*: List[Eth1Data, EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH]
   ```
 
-#### Implementation
+#### ValidatorDuties
 
 ```nim
 proc getValidator(state: BeaconState, validatorIndex: ValidatorIndex): ValidatorPubKey =
