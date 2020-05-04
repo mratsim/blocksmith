@@ -598,6 +598,9 @@ proc proposeBlockWhenValidatorDuty(
   # Note: contrary to the "async" original implementation
   # `new_state` is still valid here
 
+  # TODO: which service notifies the slashing protection?
+  #       what metadata to send?
+
   # 8. Non-blocking notify the HotDB
   rewinder.hotDB.addClearedBlockAndState(
     ClearedBlock(newBlock),
@@ -712,7 +715,8 @@ proc sendAttestations(
     # TODO Update fork choice
     # TODO Update slashing protection - TODO: can another "sendAttestations" on another thread, somehow skip this?
     #                                    6 seconds should be enough.
-
+    # TODO: which service notifies the slashing protection?
+    #       what metadata to send?
 
     # SSZ Dump
 
