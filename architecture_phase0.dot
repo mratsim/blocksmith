@@ -1,5 +1,5 @@
 digraph architecture{
-  node [shape = signature]; KeySigning [label="KeySigning (isolated process)"];
+  node [shape = signature]; SecretKeyService [label="SecretKeyService (isolated process)"];
   node [shape = octagon]; SyncManager SyncProtocol MainChain_Monitor Time CLI ValidatorUI Slashing LibP2P ETH2_API ncli nfuzz ForkChoice;
   ETH2_API [label="ETH2.0-API (REST)"];
   Slashing [label="Slashing Detection & Protection"];
@@ -68,8 +68,8 @@ digraph architecture{
   Rewinder:bsN -> ForkChoice [label="process_attestation()\nprocess_block()"]
 
   Quarantine -> Slashing [dir="both", label="isSlashable()"]
-  Rewinder:bs1 -> KeySigning [dir="both", label="signBlock()"]
-  KeySigning -> Slashing [dir="both", label="alreadyVoted()"]
+  Rewinder:bs1 -> SecretKeyService [dir="both", label="signBlock()"]
+  SecretKeyService -> Slashing [dir="both", label="alreadyVoted()"]
   Slashing -> AttestationDB [label="votingTrail\npruneFinalized()"]
   Slashing -> SignedBlockDB [label="signedBlockTrail\npruneFinalized()"]
   Rewinder:bs1 -> AttestationDB [dir="both", label="getAttestationsForBlockSlot()"]

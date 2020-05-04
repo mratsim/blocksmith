@@ -12,6 +12,13 @@ It interacts with the following services:
   - to validate an attestation
 - the "BeaconRPC" service
   - to answer RPC queries that require state handling
+- the "BeaconValidator" service
+  - to produce, sign, store, broadcast new blocks
+  - to handle validator duties, BeaconValidator should
+    pass a pointer to
+    - the Eth1 MainChainMonitor
+    - the SecretKeyService service (ValidatorPool + the link to out-of-process signing service)
+    - the network Eth2Node
 
 It is the only module that apply `state_transition()`. Furthermore the only other module that deal with `BeaconState` is the HotDB but only with raw copyMem. This is an important properties with the following benefits:
 - BeaconState is costly both in term of memory and CPU. We can focus the target of our optimizations.
@@ -70,7 +77,7 @@ type
 
 const RewinderEnvSize = max(
   # proposeBlock
-  sizeof(Rewinder) + sizeof(KeySigning) +
+  sizeof(Rewinder) + sizeof(SecretKeyService) +
     sizeof(MainChainMonitor) + sizeof(Eth2Node) +
     sizeof(Slot),
   0 # other cross-service calls
@@ -110,13 +117,13 @@ type
     # The channel sent to the HotDB to answer `getReplayStateTrail` queries
     stateTrailChan: ptr Channel[StateTrail]
     # The channel sent to the HotDB for head block + state queries
-    currentHeadChan: ptr Channel[tuple[blockDAGnode: BlockDAGnode, state: BeaconState]
+    currentHeadChan: ptr Channel[tuple[blockDAGnode: BlockDAGnode, state: BeaconState]]
     # The channel sent to the MainchainMonitor for Eth1Data + Deposits queries
     eth1MonitorChan: ptr Channel[tuple[eth1data: Eth1Data, deposits: seq[Deposit]]
-    # The channel sent to the KeySigning service
+    # The channel sent to the SecretKeyService service
     # Used for both block signature and RandaoReveal
     signingChan: ptr Channel[ValidatorSig]
-    # The channel sent to the KeySigning service
+    # The channel sent to the SecretKeyService service
     # used to check
     # - if the passed validator is attached to the beacon node
     # - if we are already signed for this slot
@@ -135,12 +142,26 @@ proc init(worker: RewinderWorker, supervisor: Rewinder, workerID: WorkerID) =
 
   worker.supervisor = supervisor
   worker.workerID = workerID
-  worker.inTasks = createShared(Channel[RewinderTask])
+  worker.inTasks = createSharedU(Channel[RewinderTask])
   worker.inTasks.open(maxItems = 0)
   worker.hotDB = supervisor.hotDB
   worker.forkChoice = supervisor.forkChoice
-  worker.stateTrailChan = createShared(Channel[tuple[startState: BeaconState, blocks: seq[SignedBeaconBlock]]])
-  worker.stateTrailChan.open(maxItems = 1) # We never request more than 1 stateTrail
+
+  # Result channel
+  worker.stateTrailChan = createSharedU(Channel[StateTrail])
+  worker.currentHeadChan = createSharedU(Channel[tuple[blockDAGnode: BlockDAGnode, state: BeaconState]])
+  worker.eth1MonitorChan = createSharedU(Channel[tuple[eth1data: Eth1Data, deposits: seq[Deposit]])
+  worker.signingChan = createSharedU(Channel[ValidatorSig])
+  worker.boolChan = createSharedU(Channel[bool])
+  worker.attChan = createSharedU(Channel[seq[Attestation]])
+
+  # We never request more than 1 result at a time
+  worker.stateTrailChan.open(maxItems = 1)
+  worker.currentHeadChan.open(maxItems = 1)
+  worker.eth1MonitorChan.open(maxItems = 1)
+  worker.signingChan.open(maxItems = 1)
+  worker.boolChan.open(maxItems = 1)
+  worker.attChan.open(maxItems = 1)
 
   # Signal ready
   worker.ready.store(true, moRelease)
@@ -368,13 +389,13 @@ It accepts a target slot and then handles:
   and which
 - Retrieving Eth1Data
 - Produce the BeaconBlock
-- Send the unsigned block to the KeySigning process
+- Send the unsigned block to the SecretKeyService process
 - Retrieve the newly signed block and its slashing protection status
 - Add it to the HotDB
 - Add it to the fork choice
 - SSZ Dump it
 
-This is completely non-blocking compared to the current NBC implementation.
+This is will not block the Chronos timer thread compared to the current NBC implementation.
 It also avoids rewinding in both `handleProposal` (via `getProposer`) and `proposeBlock`.
 
 #### Current limitations
@@ -416,7 +437,7 @@ mainchain_monitor.getBlockProposalData() uses a whole BeaconState for:
 #### Implementation
 
 ```nim
-proc getValidatorOnDuty(rewinder: RewinderWorker, keySigning: KeySigning, state: BeaconState): Option[ValidatorPubKey] =
+proc getValidatorOnDuty(rewinder: RewinderWorker, keySigning: SecretKeyService, state: BeaconState): Option[ValidatorPubKey] =
   ## Get the public key of a validator on block proposal duty
   ## if any
   var cache = get_empty_per_epoch_cache()
@@ -435,7 +456,7 @@ proc getValidatorOnDuty(rewinder: RewinderWorker, keySigning: KeySigning, state:
 
   let validatorOnDuty = state.validators[proposerIdx.get()].pubkey
 
-  # Check if one of ours. The "KeySigning" service also takes over the ValidatorPool role.
+  # Check if one of ours. The "SecretKeyService" service also takes over the ValidatorPool role.
   doAssert rewinder.boolChan.ready
   keySigning.isAttachedValidator(rewinder.boolChan, validatorOnDuty)
 
@@ -453,7 +474,7 @@ proc getValidatorOnDuty(rewinder: RewinderWorker, keySigning: KeySigning, state:
 proc proposeBlockWhenValidatorDutyWorker(
        # No result channel, all block production duties are completely delegated
        rewinder: RewinderWorker,
-       keySigning: KeySigning,
+       keySigning: SecretKeyService,
        mainChainMonitor: MainChainMonitor,
        network: Eth2Node
        slot: Slot
@@ -468,7 +489,7 @@ proc proposeBlockWhenValidatorDutyWorker(
   ##   and which
   ## - Retrieving Eth1Data
   ## - Produce the BeaconBlock
-  ## - Send the unsigned block to the KeySigning process
+  ## - Send the unsigned block to the SecretKeyService process
   ## - Retrieve the newly signed block and
   ##   its slashing protectionstatus
   ## - Add it to the HotDB
@@ -549,7 +570,7 @@ proc proposeBlockWhenValidatorDutyWorker(
   doAssert rewinder.boolChan.ready
   keySigning.signBlockProposal(
     rewinder.signingChan,
-    # Slashing protection, the KeySigning service can pass it along to the Slashing Protection service
+    # Slashing protection, the SecretKeyService service can pass it along to the Slashing Protection service
     # to overlap both signing and Slashing Protection as we expect double-signing to be rare.
     rewinder.boolChan,
     validator,
@@ -610,7 +631,7 @@ type ProposeBlockWhenValidatorDutyTask = ptr object
   env: tuple[
     # No result channel, all block production duties are completely delegated
     rewinder: Rewinder,
-    keySigning: KeySigning,
+    keySigning: SecretKeyService,
     mainChainMonitor: MainChainMonitor,
     network: Eth2Node,
     slot: Slot
@@ -646,7 +667,7 @@ proc svc_proposeBlockWhenValidatorDuty(supervisor: Rewinder, task: ptr RewinderT
 template proposeBlockWhenValidatorDuty*(
       service: Rewinder,
       rewinder: Rewinder,
-      keySigning: KeySigning,
+      keySigning: SecretKeyService,
       mainChainMonitor: MainChainMonitor,
       network: Eth2Node,
       slot: Slot
@@ -662,7 +683,7 @@ template proposeBlockWhenValidatorDuty*(
   ## - Check if one of our attached validators is scheduled for proposal
   ## - Retrieving Eth1Data
   ## - Produce the BeaconBlock
-  ## - Send the unsigned block to the KeySigning process
+  ## - Send the unsigned block to the SecretKeyService process
   ## - Retrieve the newly signed block and
   ##   its slashing protectionstatus
   ## - Add it to the HotDB

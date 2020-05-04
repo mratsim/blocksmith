@@ -124,16 +124,16 @@ This is problematic for several reasons:
 This means that
 - `proposeBlock` in `beacon_node.nim` is split into
   - `produceBlock()` implemented in the Rewinder service
-  - `signBlock()` in the KeySigning isolated service
+  - `signBlock()` in the SecretKeyService isolated service
 - `handleAttestations`/`sendAttestations`/`signAttestation` are split into
   - `collectAttestationMetadata(...): seq[tuple[
     data: AttestationData, committeeLen, indexInCommittee: int,
     validator: AttachedValidator]]` in the Rewinder service
-  - `signAttestations()` in the KeySigning isolated service
+  - `signAttestations()` in the SecretKeyService isolated service
   - `sendAttestations()` in the Beacon Node service
 - `broadcastAggregatedAttestations` is split into
   - `getAggregateAndProofFor(BeaconBlock, Slot)` in the Rewinder service
-  - `signAggregateAndProof` in the KeySigning isolated service
+  - `signAggregateAndProof` in the SecretKeyService isolated service
 - `getBeaconState(slot: Option[Slot], root: Option[Eth2Digest]) -> StringOfJson` queries:
   - `getJsonEncodedStateFor(state_root: ClearedStateRoot, slot: Slot)`
 - `addLocalValidators` only uses BeaconState to warn if a validator is unknown in the state registry.

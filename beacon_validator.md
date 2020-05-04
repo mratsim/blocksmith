@@ -2,13 +2,16 @@
 
 ## Role
 
-The BeaconValidator handles all validator duties at slot start
+The BeaconValidator handles all validator duties at slot start.
+It is also the endpoint for the ValidatorUI.
+
+Note: it should never see private keys but for development purpose it allows a relaxed mode with in-process secret keys
 
 ## Remarks
 
 It is an async procedure that is scheduled at each slot start.
 It is a CPU intensive operation.
-It will require communicating with an isolated KeySigning service running on a separate process
+It will require communicating with an isolated SecretKeyService service running on a separate process
 
 ## Current API to replace
 
@@ -247,22 +250,85 @@ proc signBlockProposal*(v: AttachedValidator, fork: Fork,
 
 ```Nim
 type
+  ValidatorKeyManagementMode = enum
+    strictOutOfProcess  # Only out of process secret keys are allowed
+    relaxedInProcess    # In-process and out-of-process secret keys are allowed
+
+const SecretKeyManagement* {.strdefine.} = "relaxed" # for development
+when SecretKeyManagement != "strict":
+  {.warning: "Validator secret keys may be stored in-process and not isolated, consider building with -d:SecretKeyManagement=strict."}
+  warn "Validator secret keys may be stored in-process and not isolated, consider building with -d:SecretKeyManagement=strict.",
+    cat "security"
+
+type
   ClearedBlock = distinct SignedBeaconBlock
 
+  IncomingSigningRequest* = tuple[
+    sigReturnChannel: ptr Channel[StringOfJson], # ValidatorSig
+    pubkey_signingRoot_pair: StringOfJson             # tuple[pubKey: ValidatorPubkey, signing_root: Eth2Digest]
+  ]
+
+  OutgoingSigningResponse* = tuple[
+    pendingSig: Future[StringOfJson], # ValidatorSig
+    sigReturnChannel: ptr Channel[StringOfJson], # ValidatorSig
+    available: bool
+  ]
+
+  AttachedValidatorRequest* = tuple[
+    respChannel: Channel[bool],
+    validator: ValidatorPubKey
+  ]
+
+  SecretKeyClient = ptr object
+    ## A secure connection to a (usually remote) secret key signing service which implements
+    ## ```
+    ## proc attachValidator(server: SecretKeyServer, keyFile: string) =
+    ##   ## TODO, how to provide a secure way to encrypt/decrypt the keyfile
+    ##   service.loadFrom(keyFile)
+    ##
+    ## proc detachValidator(server: SecretKeyServer, pubkey: ValidatorPubKey) =
+    ##   service.remove(pubkey)
+    ##
+    ## proc blsSign(server: SecretKeyServer, returnTransport: StreamTransport, pubkey: ValidatorPubKey, message: openarray[byte]) {.async.} =
+    ##   let secretKey = server.retrieveSecretFrom(pubkey)
+    ##   let sig = blsSign(secretKey, message)
+    ##   result = returnTransport.write(sig.unsafeAddr, sizeof(ValidatorSig))
+    ## ```
+    attachedValidators: HashSet[ValidatorPubKeys]
+    when SecretKeyManagement == "strict":
+      remote: RpcSocketClient
+    else: # relaxed
+      case keyManagement: ValidatorKeyManagement
+      of strictOutOfProcess:
+        remote: RpcSocketClient
+      of relaxedInProcess:
+        secretMap: Table[ValidatorPubKey, ValidatorPrivKey]
+
+    ## Tasks channels
+    inSigningRequests: ptr AsyncChannel[IncomingSigningRequest]
+    inIsAttachedValidator: ptr AsyncChannel[tulChannel[bool], ValidatorPubKey)]
+
+    ## Response channels
+    outSigningResponses: seq[OutgoingSigningResponse]
+
+    shutdown: Atomic[bool]
+
   BeaconValidator = ptr object
-    keySigning: KeySigning # The key signing service.
-    rewinder: Rewinder     # The state handling service (multithreaded)
-    network: Eth2Node      # Network, for broadcasting (TODO: ref object, should be ptr?)
+    validatorUIendpoint: RpcServer     # API for the validator UI
+    keySigning: SecretKeyClient        # The key signing service.
+    rewinder: Rewinder                 # The state handling service (multithreaded)
+    network: Eth2Node                  # Network, for broadcasting (TODO: ref object, should be ptr?)
     mainChainMonitor: MainchainMonitor # Eth1 deposit contract (TODO: ref object, should be ptr? + should be made a service or at least threadsafe `getBlockProposalData`)
 
     # Config
     conf: BeaconNodeConf # have a specific ValidatorNodeConf that is a subset of BeaconNodeConf?
 
-    # Result channels
-    blockProposalChan: ptr Channel[ClearedBlock]
+template deref*(T: typedesc): typedesc =
+  ## Return the base object type behind a ptr type
+  typeof(default(T)[])
 
-proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: KeySigning, network: Eth2Node, mainChainMonitor: MainchainMonitor, conf: BeaconNodeConf) =
-  # We assume that KeySigning is a ptr object
+proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: SecretKeyClient, network: Eth2Node, mainChainMonitor: MainchainMonitor, conf: BeaconNodeConf) =
+  # We assume that SecretKeyService is a ptr object
   # TODO: Currently Eth2Node is a ref object, but it should probably be a ptr object or
   # - Can we use ptr ref object?
   # - We need an intermediate object with a stable address that can be called across threads.
@@ -272,4 +338,73 @@ proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: KeyS
   beaconValidator.network = network
   beaconValidator.mainChainMonitor = mainCHainMonitor
   beaconValidator.conf = conf
+
+proc init(keySigning: SecretKeyClient, address: string, port: Port) =
+  doAssert not keySigning.isNil, "The key signing service should be allocated, key management kind (remote/in-process) should be set and shutdown state should be true at startup"
+  doAssert keySigning.shutdown, "The key signing service should start from the shutdown state"
+  when SecretKeyManagement == "strict":
+    waitFor keySigning.remote.connect(address, port)
+  else:
+    case keyManagement # This is set on thread start, before calling init
+    of strictOutOfProcess:
+      waitFor keySigning.remote.connect(address, port)
+    of relaxedInProcess:
+      discard
+
+  keySigning.shutdown.store(false, moRelaxed)
+
+proc init(signingRespChannel: var OutgoingSigningResponse) =
+  stateRespChannel.available = true
+
+proc findAvailableResponseChannel(signingRespChannel: var OutgoingSigningResponse): int =
+  ## Find an available channel, creating a new one if needed
+
+  let len = signingRespChannel.len
+  for i in 0 ..< len:
+    if signingRespChannel[i].available:
+      return i
+
+  # No available channel found
+  signingRespChannel.setLen(len + 1)
+  signingRespChannel[len].init()
+  return len
+
+proc eventLoopSigning(keySigning: SecretKeyClient, address: string, port: Port) =
+  keySigning.init()
+
+  var signingRequests = keySigning.inSigningRequests.recv()
+  var queryAttachedValidator = keySigning.inIsAttachedValidator.recv()
+
+  while not keySigning.shutdown.load(moRelaxed):
+    if signingRequests.finished(): # For now assuming remote validator
+      let req = signingRequests.get()
+      let futSign = keySigning.remote.call("blsSign", req.pubkey_signingRoot_pair)
+      let chanIdx = findAvailableResponseChannel(keySigning.outSigningResponses)
+      doAssert keySigning.outSigningResponses[chanIdx].available
+      keySigning.outSigningResponses[chanIdx].available = false
+      keySigning.outSigningResponses[chanIdx].pendingSig = futSign
+      keySigning.outSigningResponses[chanIdx].sigReturnChannel = req.sigReturnChannel
+
+      # Listen to next request
+      signingRequests = keySigning.inSigningRequests.recv()
+
+    if queryAttachedValidator.finished():
+      let query = queryAttachedValidator.get()
+      doAssert respChannel.ready, "Oops, the response channel should never block."
+      query.respChannel.send keySigning.attachedValidators.contains(query.validator)
+
+      # Listen to next request
+      queryAttachedValidator = keySigning.inIsAttachedValidator.recv()
+
+    poll()
+
+    for i in 0 ..< keySigning.outSigningResponses.len:
+      if not keySigning.outSigningResponses[i].available:
+        if keySigning.outSigningResponses[chanIdx].pendingSig.finished():
+          req.sigReturnChannel.send keySigning.outSigningResponses[chanIdx].pendingSig.get()
+          keySigning.outSigningResponses[chanIdx].pendingSig = nil
+          keySigning.outSigningResponses[chanIdx].sigReturnChannel = nil
+          keySigning.outSigningResponses[chanIdx].available = true
+
+  keySigning.teardown()
 ```

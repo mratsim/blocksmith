@@ -147,7 +147,7 @@ The event loop should:
 
 > TODO:
 >   On `produceBlock()` + `signBlock()` we should also update the HotDB. However this would mean that the `Clearance` module manipulates state which is undesirable.
->   The RewinderWorkers can directly connect to the KeySigning service instead
+>   The RewinderWorkers can directly connect to the SecretKeyService service instead
 
 
 ```Nim
