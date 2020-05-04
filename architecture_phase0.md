@@ -142,3 +142,23 @@ Instead with message-passing, a producer can proactively monitor the number of e
 This also helps identify bottlenecks in the application as a whole instead of individual component (BLS signatures, state_transition, shuffling, ...).
 
 Note on monitoring: it can be lightweight and avoid locking. For lock-free queues, the number of items enqueued is overestimated by the producer and underestimated by the consumer.
+
+Example of monitoring with backpressure
+
+![channel_broker_monitoring.png]
+
+#### "High-load" mode
+
+With better backpressure feedback, the beacon client can take proactive steps to:
+- drop peers to limit input traffic (including blocks and attestations to check and sync queries)
+- deactivate non-essential services, like trying to slash blocks coming from peers.
+
+#### Channel optimizations
+
+See [message_passing.md](message_passing.md)
+
+#### Malicious load
+
+Malicious load in form of spam will require cooperation with the PeerPool to drop peers.
+
+TODO: do we need a separate module or does nim-libp2p allow custom updates to the peer rating.
