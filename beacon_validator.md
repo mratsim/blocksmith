@@ -359,6 +359,8 @@ type
     rewinder: Rewinder                 # The state handling service (multithreaded)
     network: Eth2Node                  # Network, for broadcasting (TODO: ref object, should be ptr?)
     mainChainMonitor: MainchainMonitor # Eth1 deposit contract (TODO: ref object, should be ptr? + should be made a service or at least threadsafe `getBlockProposalData`)
+    slashingProtection: SlashingDetection
+    clock: BeaconClock
 
     # Config
     conf: BeaconNodeConf # have a specific ValidatorNodeConf that is a subset of BeaconNodeConf?
@@ -367,7 +369,7 @@ template deref*(T: typedesc): typedesc =
   ## Return the base object type behind a ptr type
   typeof(default(T)[])
 
-proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: SecretKeyClient, network: Eth2Node, mainChainMonitor: MainchainMonitor, conf: BeaconNodeConf) =
+proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: SecretKeyClient, network: Eth2Node, mainChainMonitor: MainchainMonitor, slashing: SlashingDetection, conf: BeaconNodeConf) =
   # We assume that SecretKeyService is a ptr object
   # TODO: Currently Eth2Node is a ref object, but it should probably be a ptr object or
   # - Can we use ptr ref object?
@@ -377,6 +379,7 @@ proc init(beaconValidator: BeaconValidator, rewinder: Rewinder, keySigning: Secr
   beaconValidator.rewinder = rewinder
   beaconValidator.network = network
   beaconValidator.mainChainMonitor = mainCHainMonitor
+  beaconValidator.slashing = slashing
   beaconValidator.conf = conf
 
 proc init(keySigning: SecretKeyClient, address: string, port: Port) =
@@ -441,10 +444,13 @@ proc eventLoopSigning(keySigning: SecretKeyClient, address: string, port: Port) 
     for i in 0 ..< keySigning.outSigningResponses.len:
       if not keySigning.outSigningResponses[i].available:
         if keySigning.outSigningResponses[chanIdx].pendingSig.finished():
-          req.sigReturnChannel.send keySigning.outSigningResponses[chanIdx].pendingSig.get()
+          let sig = keySigning.outSigningResponses[chanIdx].pendingSig.get()
+          req.sigReturnChannel.send sig
           keySigning.outSigningResponses[chanIdx].pendingSig = nil
           keySigning.outSigningResponses[chanIdx].sigReturnChannel = nil
           keySigning.outSigningResponses[chanIdx].available = true
+
+          keySigning.slashingProtection.submit(sig) # TODO, we need to submit more things, should this be handled by Rewinder?
 
   keySigning.teardown()
 ```
