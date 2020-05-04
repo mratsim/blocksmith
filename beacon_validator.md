@@ -13,6 +13,46 @@ It is an async procedure that is scheduled at each slot start.
 It is a CPU intensive operation.
 It will require communicating with an isolated SecretKeyService service running on a separate process
 
+## Potential optimization
+
+Signing is implemented as
+
+```Nim
+func coreSign[T: byte|char](
+       secretKey: SecretKey,
+       message: openarray[T],
+       domainSepTag: string): GroupG2 =
+  ## Computes a signature or proof-of-possession
+  ## from a secret key and a message
+  # Spec
+  # 1. Q = hash_to_point(message)
+  # 2. R = SK * Q
+  # 3. signature = point_to_signature(R)
+  # 4. return signature
+  result = hashToG2(message, domainSepTag)
+  result.mul(secretKey.intVal)
+```
+
+Both hashToG2 and Scalar Multiplication are very slow operations (throughput is about 900 op/s for each on an overclocked i9-9980XE at @4.1GHz, so 1ms per operation) ([source](https://github.com/status-im/nim-blscurve/issues/47))
+We could introduce `preHashToG2(message)` that can be done on the multithreaded Rewinder workerpool
+and a `signPrehashed(GroupG2)` in the signing service.
+
+That said:
+- signing is done once per slot (6 seconds) unless we are catching up.
+- but it does happen in burst, if we have N validators attached, it's N signing requests at once
+  with a deadline of 1~2 seconds.
+
+Hence we might want to run the signing service on a threadpool (that will be mostly sleeping).
+
+Some estimations if we dedicate a Raspberry Pi 4 to handle signing
+- Assuming 64-bit crypto, with throughput of 30 signatures per core per sec (https://github.com/status-im/nim-blscurve/issues/28#issuecomment-611633471)
+- 4 cores
+- We can do 120 validator signatures per sec if bottlenecked by signing.
+- Or 30 single-threaded
+- Or 60 if we use preHashingToG2
+
+(or we switch our BLS backend at the expense of less constant-time protection)
+
 ## Current API to replace
 
 Note: ordered from high-level routines to subroutines with only the `{.async.}` proc
