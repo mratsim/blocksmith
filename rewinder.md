@@ -230,6 +230,9 @@ proc eventLoopSupervisor*(supervisor: Rewinder, hotDB: HotDB, forkChoice: ForkCh
 >   - https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/p2p-interface.md#global-topics\
 >   - https://github.com/status-im/nim-beacon-chain/blob/c3cdb399/beacon_chain/block_pool.nim#L1052-L1159\
 
+TODO: if we receive a valid block from the expected block proposer
+      we should immediately attest to it
+
 ```nim
 proc isValidBeaconBlockP2PExWorker(
        resultChan: ptr Channel[bool]],
@@ -268,6 +271,9 @@ proc isValidBeaconBlockP2PExWorker(
     return
 
   resultChan.send true
+
+  # TODO: check if the block come from the expected proposer
+  #       and immediately attest to it
 
 servicify(svc_isValidBeaconBlockP2PExWorker, isValidBeaconBlockP2PExWorker)
 
@@ -749,6 +755,39 @@ proc handleBlockProposalAndAttestations_worker(
       headSlot = shortLog(head.slot),
       slot = shortLog(slot)
     return
+
+  # https://github.com/ethereum/eth2.0-specs/blob/v0.11.1/specs/phase0/validator.md#attesting
+  # A validator should create and broadcast the attestation to the associated
+  # attestation subnet when either (a) the validator has received a valid
+  # block from the expected block proposer for the assigned slot or
+  # (b) one-third of the slot has transpired (`SECONDS_PER_SLOT / 3` seconds
+  # after the start of slot) -- whichever comes first.
+  if head.blockDAGnode.didEarlyAttestation:
+    var cache = get_empty_per_epoch_cache()
+    debug "Already attested to block coming from expected proposer.",
+      blockRoot = $shortlog(head.blockDAGnode.blockroot),
+      slot      = head.blockDAGnode.slot,
+      epoch     = head.blockDAGnode.compute_epoch_at_slot
+      proposer  = $shortLog(head.state.getValidator(head.state.get_beacon_proposer_index(cache)))
+
+  template sleepToSlotOffset(extra: chronos.Duration, msg: static string) =
+    let
+      fromNow = node.beaconClock.fromNow(slot.toBeaconTime(extra))
+
+    if fromNow.inFuture:
+      trace msg,
+        slot = shortLog(slot),
+        fromNow = shortLog(fromNow.offset),
+        cat = "scheduling"
+
+      await sleepAsync(fromNow.offset)
+
+      # Time passed - we might need to select a new head in that case
+      head = node.updateHead()
+
+  sleepToSlotOffset(
+    seconds(int64(SECONDS_PER_SLOT)) div 3, "Waiting to send attestations")
+
 
   let attestations = prepareAttestations(rewinder.keySigning, slot, head)
   rewinder.sendAttestations(network, head.state.fork, head.state.genesis_validator_root, attestations)
