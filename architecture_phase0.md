@@ -162,3 +162,30 @@ See [message_passing.md](message_passing.md)
 Malicious load in form of spam will require cooperation with the PeerPool to drop peers.
 
 TODO: do we need a separate module or does nim-libp2p allow custom updates to the peer rating.
+
+## Maintenance, debugging and testing
+
+Maintenance is improved due to each service having clearly defined role, entry points and outputs that are defined by messages.
+In particular, they respond deterministically to messages and control flow is easier to follow unlike the current implementation with functions deep in the stack that may have aliasing errors due to being called async with a mutable state.
+
+Tooling to test complex schedule/interleaving interactions are made easier. For example to test the current fork choice, an interpreter
+is needed to facilitate sequencing of blocks and attestations.
+That interpeter is preloaded with a sequence of events (messages) and then run the fork choice computations.
+With each service an event loop with inboxes of messages, the interpreter is already built and only the messages are necessary.
+
+Stacktraces are not deeply nested or eaten away by macros and templates, they become event_loop -> event_handler instead of
+```
+/.../nim-beacon-chain/beacon_chain/mainchain_monitor.nim(503) main
+/.../nim-beacon-chain/beacon_chain/mainchain_monitor.nim(496) NimMain
+/.../nim-beacon-chain/beacon_chain/beacon_node.nim(1463) main
+/.../nim-beacon-chain/beacon_chain/beacon_node.nim(1208) start
+/.../nim-beacon-chain/beacon_chain/beacon_node.nim(1166) run
+/.../nim-beacon-chain/vendor/nim-chronos/chronos/asyncloop.nim(941) runForever
+/.../nim-beacon-chain/vendor/nim-chronos/chronos/asyncloop.nim(278) poll
+/.../nim-beacon-chain/beacon_chain/beacon_node.nim(1158) colonanonymous
+/.../nim-beacon-chain/vendor/nim-chronos/chronos/asyncmacro2.nim(63) onSlotStart
+/.../nim-beacon-chain/vendor/nim-chronos/chronos/asyncmacro2.nim(66) onSlotStart_continue
+/.../nim-beacon-chain/vendor/nimbus-build-system/vendor/Nim/lib/system/excpt.nim(407) reportUnhandledError
+/.../nim-beacon-chain/vendor/nimbus-build-system/vendor/Nim/lib/system/excpt.nim(358) reportUnhandledErrorAux
+Error: unhandled exception: /.../nim-beacon-chain/beacon_chain/fork_choice/fork_choice.nim(134, 14) `false` Double vote detected [AssertionError]
+```
