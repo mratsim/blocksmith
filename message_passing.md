@@ -1,5 +1,105 @@
 # Message-passing
 
+## Dealing with the cost of copying
+
+The most obvious cost of message passing is copying the message into the buffer.
+If we take the BeaconState, which is about 2.7MB of stack memory + some dynamic memory,
+this might seem like overhead that would be too costly.
+
+However:
+- Only 2 services, interact by passing such big messages, the HotDB and the Rewinder for `getReplayStateTrail()`
+  - Technically the `sync` services also do that but there is no alternative to message-passing to send data trhough the network.
+- Copies only happens once, to copy from the HotDB to the response channel.
+  "Copying" from the response channel to the Rewinder is actually a move since it's the sole owner of the data.
+  and so it's just copying a pointer at a low-level.
+- Copies can be overlapped with costly processing, usually `hash_tree_root` of the consensus object. If we use block validation as an example:
+  ```Nim
+  proc isValidBeaconBlockP2PExWorker(
+       resultChan: ptr Channel[bool]],
+       wrk: RewinderWorker,
+       unsafeBlock: QuarantinedBlock
+     ) =
+  ## Expensive block validation.
+  ## The unsafeBlock parent MUST be in the HotDB before calling this proc
+
+  wrk.hotDB.getReplayStateTrail(wrk.stateTrailChan.addr, wrk.hotDB, unsafeBlock.parent_root))
+
+  # Block until we get the stateTrail
+  # TODO: we can optimize the copy to not reallocate
+  (wrk.state, wrk.blocks) = wrk.stateTrailChan.recv()
+
+  # Move the local worker state to the desired state
+  wrk.state.apply(wrk.blocks) # `apply` is an internal procs that applies each `ValidBeaconBlock`
+
+  # Check that the proposer signature, signed_beacon_block.signature, is valid with
+  # respect to the proposer_index pubkey.
+  let
+    blockRoot = hash_tree_root(unsafeBlock.message)
+    domain = get_domain(wrk.state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(unsafeBlock.message.slot))
+    signing_root = compute_signing_root(blockRoot, domain)
+    proposer_index = unsafeBlock.message.proposer_index
+
+  if proposer_index >= wrk.state.validators.len.uint64:
+    resultChan.send false
+    return
+  if not blsVerify(
+           wrk.state.validators[proposer_index],
+           signing_root.data, unsafeBlock.signature
+         ):
+    debug "isValidBeaconBlockP2PEx: block failed signature verification"
+    resultChan.send false
+    return
+
+  resultChan.send true
+
+  # TODO: check if the block come from the expected proposer
+  #       and immediately attest to it
+  ```
+  we can move hashTreeRoot() and other assignment to hide the HotDB latency
+  proc isValidBeaconBlockP2PExWorker(
+       resultChan: ptr Channel[bool]],
+       wrk: RewinderWorker,
+       unsafeBlock: QuarantinedBlock
+     ) =
+  ## Expensive block validation.
+  ## The unsafeBlock parent MUST be in the HotDB before calling this proc
+
+  wrk.hotDB.getReplayStateTrail(wrk.stateTrailChan.addr, wrk.hotDB, unsafeBlock.parent_root))
+
+  ## Hide latency of getting a state via message-passing
+  let
+    blockRoot = hash_tree_root(unsafeBlock.message)
+    signing_root = compute_signing_root(blockRoot, domain)
+    proposer_index = unsafeBlock.message.proposer_index
+
+  # Block until we get the stateTrail
+  # TODO: we can optimize the copy to not reallocate
+  (wrk.state, wrk.blocks) = wrk.stateTrailChan.recv()
+
+  # Move the local worker state to the desired state
+  wrk.state.apply(wrk.blocks) # `apply` is an internal procs that applies each `ValidBeaconBlock`
+
+  # Check that the proposer signature, signed_beacon_block.signature, is valid with
+  # respect to the proposer_index pubkey.
+  let domain = get_domain(wrk.state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(unsafeBlock.message.slot))
+
+  if proposer_index >= wrk.state.validators.len.uint64:
+    resultChan.send false
+    return
+  if not blsVerify(
+           wrk.state.validators[proposer_index],
+           signing_root.data, unsafeBlock.signature
+         ):
+    debug "isValidBeaconBlockP2PEx: block failed signature verification"
+    resultChan.send false
+    return
+
+  resultChan.send true
+
+  # TODO: check if the block come from the expected proposer
+  #       and immediately attest to it
+  ```
+
 ## Channel optimization
 
 In the current architecture, all channels are Multi-Producer-Single-Consumer (MPSC - input tasks) or Single-Producer-Single-Consumer (SPSC - input tasks and output outcomes/results), in case they become a bottleneck the following optimisations can be done in order of risk and performance improvement:
