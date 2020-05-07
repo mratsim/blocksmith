@@ -56,6 +56,7 @@ However:
   #       and immediately attest to it
   ```
   we can move hashTreeRoot() and other assignment to hide the HotDB latency
+  ```Nim
   proc isValidBeaconBlockP2PExWorker(
        resultChan: ptr Channel[bool]],
        wrk: RewinderWorker,
