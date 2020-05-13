@@ -145,7 +145,7 @@ Note on monitoring: it can be lightweight and avoid locking. For lock-free queue
 
 Example of monitoring with backpressure
 
-![channel_broker_monitoring.png]
+![channel_broker_monitoring.png](https://github.com/mratsim/blocksmith/blob/master/channel_broker_monitoring.png)
 
 #### "High-load" mode
 
