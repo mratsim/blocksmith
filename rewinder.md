@@ -442,6 +442,10 @@ mainchain_monitor.getBlockProposalData() uses a whole BeaconState for:
 
 #### ValidatorDuties
 
+An important change is the addition of a `didEarlyAttestation` field to the DAG node.
+When a block is cleared from Quarantine, if we can attest immediately to it, we do and tag it as such.
+Otherwise, during validator duties we need to wait for 1/3 of slot time before attesting to a block.
+
 ```nim
 proc getValidator(state: BeaconState, validatorIndex: ValidatorIndex): ValidatorPubKey =
   state.validators[validatorIndex].pubkey
